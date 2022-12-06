@@ -17,6 +17,7 @@ The tutorial covers all steps required to prepare the EKS environment and launch
 * [Launch 64-worker BERT pretraining job using TorchX](#launchtraining)
 * [Monitor the training job](#monitortraining)
 * [View the training job in Tensorboard](#tensorboard)
+* [Monitor Neuron device utilization using neuron-top](#neurontop)
 * [Clean-up tutorial resources](#cleanup)
 
 ![Architecture Diagram](images/eks_torchx_trn1_arch.png)
@@ -639,6 +640,34 @@ The BERT training job also stores training metrics on the FSx for Lustre shared 
 ```
 
 The script will first build a Tensorboard container and push it to your ECR repository. Next, the Tensorboard deployment will be launched within your EKS cluster. When the script completes, it will output a password-protected URL that you can use to access Tensorboard. Please note that it may take 1-2 minutes for the URL to become accessible.
+
+<br/>
+<br/>
+<br/>
+
+## Monitor Neuron device utilization using neuron-top <a name="neurontop"></a>
+
+The Neuron SDK provides [Neuron tools](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/tools/index.html#neuron-tools) for monitoring Neuron devices on Inf1 and Trn1 instances. During a training job it is often useful to monitor Neuron device utilization using `neuron-top`, which provides a text-based view of device and memory utilization.
+
+To view `neuron-top` statistics for one of your nodes, begin by choosing one of your running BERT training pods:
+
+```
+kubectl get pods|grep Running|grep bert
+```
+
+Substitute the name of one of your running pods into the following command to launch a bash prompt within the running pod:
+
+```
+kubectl exec -it YOUR_POD_NAME -- /bin/bash
+```
+
+At the bash prompt, run `neuron-top`:
+
+```
+neuron-top
+```
+
+When you are finished exploring `neuron-top`, press `q` to quit. At the pod's bash prompt, press `CTRL-D` to return to your jump host.
 
 <br/>
 <br/>
