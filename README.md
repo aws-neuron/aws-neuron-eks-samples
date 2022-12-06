@@ -1,18 +1,31 @@
-## My Project
+# AWS Neuron EKS Samples
 
-TODO: Fill this README out!
+This repository contains samples for [Amazon Elastic Kubernetes Service (EKS)](https://aws.amazon.com/eks/) and [AWS Neuron](https://aws.amazon.com/machine-learning/neuron/), the software development kit (SDK) that enables machine learning (ML) inference and training workloads on the AWS ML accelerator chips [Inferentia](https://aws.amazon.com/machine-learning/inferentia/) and [Trainium](https://aws.amazon.com/machine-learning/trainium/).
 
-Be sure to:
+The samples in this repository demonstrate the types of patterns that can be used to deliver inference and distributed training on EKS using Inferentia and Trainium. The samples can be used as-is, or easily modified to support additional models and use cases.
 
-* Change the title in this README
-* Edit your repository description on GitHub
-* Write in your license below and create a LICENSE file
+Samples are organized by use case below:
 
-## Security
+## Training
 
-See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
+| Link | Description | Instance Type |
+| --- | --- | --- |
+| [BERT pretraining](dp_bert_hf_pretrain) | End-end workflow for creating an EKS cluster with 2 trn1.32xl nodes and running BERT phase1 pretraining | Trn1 |
 
-## License
+## Inference
 
-This library is licensed under the LICENSE NAME HERE License.
+Coming soon
+
+## Getting Help
+
+If you encounter issues with any of the samples in this repository, please open an issue via the GitHub Issues feature.
+
+## Contributing
+
+Please refer to the [CONTRIBUTING](CONTRIBUTING.md) document for details on contributing additional samples to this repository.
+
+
+## Release Notes
+
+Please refer to the [Change Log](releasenotes.md).
 
