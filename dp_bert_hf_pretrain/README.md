@@ -688,6 +688,9 @@ kubectl delete pods --all
 kubectl delete -f storageclass.yaml
 kubectl delete -f claim.yaml
 
+# Delete nodegroup
+eksctl delete nodegroup trn1-ng1 --cluster my-trn1-cluster
+
 # Delete Cluster resources
 aws cloudformation delete-stack --stack-name eks-ng-stack
 aws cloudformation delete-stack --stack-name eksctl-my-trn1-cluster-cluster
