@@ -696,7 +696,7 @@ aws cloudformation delete-stack --stack-name eks-ng-stack
 eksctl delete cluster my-trn1-cluster
 
 # Delete Container repository
-aws ecr delete-repository --force eks_torchx_tutorial
+aws ecr delete-repository --force --repository-name eks_torchx_tutorial
 ```
 
 Lastly, terminate your jump host instance via the AWS Console.
