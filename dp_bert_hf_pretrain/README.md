@@ -680,6 +680,12 @@ When you are finished with the tutorial, run the following commands on the jump 
 ```
 # Delete Tensorboard deployment
 kubectl delete -f tensorboard_manifest.yaml
+
+# Delete any remaining pods
+kubectl delete pods --all
+
+# Delete FSX resources
+kubectl delete -f storageclass.yaml
 kubectl delete -f claim.yaml
 
 # Delete Cluster resources
