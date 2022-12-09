@@ -271,7 +271,7 @@ aws cloudformation describe-stacks --stack-name eks-ng-stack|grep StackStatus
 First generate the EKS Nodegroup manifest file:
 
 ```
-./scripts/create_eks_trn1_ng_manifest.sh
+./scripts/create_eks_trn1_nodegroup_manifest.sh
 ```
 
 Next, use eksctl to create the EKS Nodegroup from the manifest:
