@@ -693,8 +693,7 @@ eksctl delete nodegroup trn1-ng1 --cluster my-trn1-cluster
 
 # Delete Cluster resources
 aws cloudformation delete-stack --stack-name eks-ng-stack
-aws cloudformation delete-stack --stack-name eksctl-my-trn1-cluster-cluster
-aws cloudformation delete-stack --stack-name eksctl-my-trn1-cluster-addon-iamserviceaccount-kube-system-aws-node
+eksctl delete cluster my-trn1-cluster
 
 # Delete Container repository
 aws ecr delete-repository --force eks_torchx_tutorial
