@@ -95,8 +95,7 @@ RUN ${PIP} install --no-cache-dir -U \
 
 RUN mkdir -p /etc/pki/tls/certs && cp /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt
 RUN ${PIP} config set global.extra-index-url $PIP_REPO \
- && ${PIP} install --force-reinstall torch-neuronx==1.11.0.* --extra-index-url $PIP_REPO \
-    && ${PIP} install --force-reinstall neuronx-cc==2.* --extra-index-url $PIP_REPO
+ && ${PIP} install --force-reinstall torch-neuronx==1.12.0.* neuronx-cc==2.* --extra-index-url $PIP_REPO
 
 # attrs, neurox-cc required: >=19.2.0, sagemaker 2.103.0 <22,>=20.3.0
 # protobuf neurox-cc<4 , sagemaker training <3.20,>=3.9.2

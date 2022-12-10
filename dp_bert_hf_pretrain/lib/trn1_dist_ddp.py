@@ -47,13 +47,14 @@ def generateAppDef(script_args: str, nnodes: int, nproc_per_node: int,
             "FI_EFA_USE_DEVICE_RDMA": "1",
             "FI_PROVIDER": "efa",
             "NEURON_RT_RESET_CORES": "1",
+            "XLA_TRANSFER_SEED_ASYNC": "1",
             "NEURON_CC_FLAGS": f"--cache_dir={NEURON_CACHE}",
             "TRANSFORMERS_CACHE": TRANSFORMERS_CACHE
             }
 
     # Configure BF16 if requested by user
     if bf16:
-        env_mapping["XLA_USE_BF16"] = "1"
+        env_mapping["XLA_DOWNCAST_BF16"] = "1"
 
     resourcedef = specs.Resource(cpu=0, gpu=0, memMB=0, 
             capabilities={"node.kubernetes.io/instance-type": "trn1.32xlarge"}, 
