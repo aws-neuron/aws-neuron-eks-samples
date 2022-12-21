@@ -667,9 +667,9 @@ kubectl logs YOUR_POD_NAME|tail -3
 
 <pre style="background: black; color: #ddd">
 bash> <b>kubectl logs YOUR_POD_NAME|tail -3</b>
-[0]:LOG Wed Dec 21 00:12:27 2022 - (0, 14) step_loss : 11.2500 learning_rate : 2.80e-06 throughput : 6497.86
-[0]:LOG Wed Dec 21 00:12:32 2022 - (0, 15) step_loss : 9.7500 learning_rate : 3.00e-06 throughput : 6487.78
-[0]:LOG Wed Dec 21 00:12:37 2022 - (0, 16) step_loss : 11.5000 learning_rate : 3.20e-06 throughput : 6484.92
+[0]:LOG Wed Dec 21 00:51:01 2022 - (0, 14) step_loss : 10.7011 learning_rate : 2.80e-06 throughput : 6449.36
+[0]:LOG Wed Dec 21 00:51:06 2022 - (0, 15) step_loss : 10.6613 learning_rate : 3.00e-06 throughput : 6453.70
+[0]:LOG Wed Dec 21 00:51:11 2022 - (0, 16) step_loss : 10.5861 learning_rate : 3.20e-06 throughput : 6458.87
 </pre>
 
 To continously view the training script output (similar to the `tail -f` command in Linux), you can use the following command. The command can be terminated using CTRL-C.
