@@ -11,6 +11,7 @@ Samples are organized by use case below:
 | Link | Description | Instance Type |
 | --- | --- | --- |
 | [BERT pretraining](dp_bert_hf_pretrain) | End-end workflow for creating an EKS cluster with 2 trn1.32xl nodes and running BERT phase1 pretraining (64-worker DataParallel)| Trn1 |
+| [MLP training](mlp_train) | Introductory workflow for creating an EKS cluster with 1 node and running a simple MLP training job| Trn1 |
 
 ## Inference
 
