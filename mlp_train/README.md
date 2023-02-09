@@ -15,7 +15,7 @@ This topic describes how to create an Amazon EKS cluster with nodes running [Ama
 
 *To create a cluster with Trn1 Amazon EC2 instance nodes*
 
-1. First, you will collect availability zones that support Trainium instance types in the region where you will provision the cluster (`us-west-2` in this case). Trainium instance types are generally available in select us-east-1 and us-west-2 regions, and we will continue to add support for more regions over time. Run the following command to determine which availability zones support Trn1 instances.  You may replace `trn1.32xlarge` with another [Trn1 instance type](https://aws.amazon.com/ec2/instance-types/trn1/)if you choose. This document covers a single-node example with trn1. For a multi-node example, see [Tutorial: Launch a Multi-Node PyTorch Neuron Training Job on Trainium Using TorchX and EKS](https://github.com/aws-neuron/aws-neuron-eks-samples/tree/master/dp_bert_hf_pretrain). 
+1. First, you will collect availability zones that support Trainium instance types in the region where you will provision the cluster (`us-west-2` in this case). Trainium instance types are generally available in select us-east-1 and us-west-2 regions, and we will continue to add support for more regions over time. Run the following command to determine which availability zones support Trn1 instances.  You may replace `trn1.32xlarge` with another [Trn1 instance type](https://aws.amazon.com/ec2/instance-types/trn1/) if you choose. This document covers a single-node example with trn1. For a multi-node example, see [Tutorial: Launch a Multi-Node PyTorch Neuron Training Job on Trainium Using TorchX and EKS](https://github.com/aws-neuron/aws-neuron-eks-samples/tree/master/dp_bert_hf_pretrain). 
 
 ```
 aws ec2 describe-instance-type-offerings \
@@ -84,7 +84,7 @@ neuron-device-plugin-daemonset-hwjsj   1/1     Running   0          5m
 
 # (Optional) Train a model
 
-IIn this section, you’ll build and deploy a sample MLP training model that runs on the Trainium instance in your cluster. This example runs DataParallel training of the MLP model using 32 workers on a single trn1.32xlarge instance. For an example of distributed training using EKS with multiple trn1 instances, see Tutorial:[Launch a Multi-Node PyTorch Neuron Training Job on Trainium Using TorchX and EKS](https://github.com/aws-neuron/aws-neuron-eks-samples/tree/master/dp_bert_hf_pretrain).
+In this section, you’ll build and deploy a sample MLP training model that runs on the Trainium instance in your cluster. This example runs DataParallel training of the MLP model using 32 workers on a single trn1.32xlarge instance. For an example of distributed training using EKS with multiple trn1 instances, see Tutorial:[Launch a Multi-Node PyTorch Neuron Training Job on Trainium Using TorchX and EKS](https://github.com/aws-neuron/aws-neuron-eks-samples/tree/master/dp_bert_hf_pretrain).
 
 ## Create a Dockerfile
 
