@@ -16,11 +16,6 @@ cat <<EOF > cfn_params.json
     },
 
     {
-        "ParameterKey": "NodeGroupName",
-        "ParameterValue": "trn1-ng1"
-    },
-
-    {
         "ParameterKey": "VpcId",
         "ParameterValue": "$VPC_ID"
     }

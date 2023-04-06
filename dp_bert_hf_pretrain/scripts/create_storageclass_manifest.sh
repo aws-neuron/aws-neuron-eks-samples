@@ -2,10 +2,11 @@
 
 CLUSTER_NAME=my-trn1-cluster
 SUBNET_ID=$(aws ec2 describe-instances --filters Name=tag-value,Values=my-trn1-cluster \
-    --query "Reservations[0].Instances[0].SubnetId" --output text)
+	Name=instance-state-name,Values=running \
+	--query "Reservations[0].Instances[0].SubnetId" --output text)
 #LUSTRE_SG=$(aws ec2 describe-security-groups --filters Name=group-name,Values=eks-fsx-lustre-sg \
 #    --query SecurityGroups[].GroupId --output text)
-LUSTRE_SG=$(aws cloudformation describe-stacks --stack-name eks-ng-stack \
+LUSTRE_SG=$(aws cloudformation describe-stacks --stack-name eks-trn1-ng-stack \
     --query "Stacks[0].Outputs[?OutputKey=='LustreSecurityGroup'].OutputValue" \
     --output text)
 

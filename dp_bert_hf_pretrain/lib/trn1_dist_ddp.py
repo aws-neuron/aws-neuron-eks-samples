@@ -9,7 +9,8 @@ CACHE_ROOT = "/data/"
 #   see: https://github.com/pytorch/torchx/blob/main/torchx/components/dist.py
 def generateAppDef(script_args: str, nnodes: int, nproc_per_node: int, 
                    script: str, image: str, name: str, precompile: bool=False, 
-                   bf16: bool=False, cacheset: str="default") -> specs.AppDef:
+                   bf16: bool=False, cacheset: str="default", 
+                   instance_type: str="trn1.32xlarge") -> specs.AppDef:
 
     # Define the location of the Neuron compiler cache and Transformers cache on shared storage.
     # Note: "cacheset" is a unique name/key chosen by the user to distinguish between jobs. The 
@@ -43,9 +44,10 @@ def generateAppDef(script_args: str, nnodes: int, nproc_per_node: int,
     ]
 
     env_mapping = {
-            "NCCL_SOCKET_IFNAME": "eth0",
+            "CCOM_SOCKET_IFNAME": "eth0",
             "FI_EFA_USE_DEVICE_RDMA": "1",
             "FI_PROVIDER": "efa",
+            "FI_EFA_FORK_SAFE": "1",
             "NEURON_RT_RESET_CORES": "1",
             "XLA_TRANSFER_SEED_ASYNC": "1",
             "NEURON_CC_FLAGS": f"--cache_dir={NEURON_CACHE}",
@@ -56,9 +58,18 @@ def generateAppDef(script_args: str, nnodes: int, nproc_per_node: int,
     if bf16:
         env_mapping["XLA_DOWNCAST_BF16"] = "1"
 
+    instance_type = instance_type.lower()
+    if instance_type == "trn1n.32xlarge":
+        num_efas = 16
+    elif instance_type == "trn1.32xlarge":
+        num_efas = 8
+    else:
+        raise Exception(f"Instance type {instance_type} is not supported.\n" 
+                        + "Please try trn1.32xlarge or trn1n.32xlarge.")
+
     resourcedef = specs.Resource(cpu=0, gpu=0, memMB=0, 
-            capabilities={"node.kubernetes.io/instance-type": "trn1.32xlarge"}, 
-            devices={"aws.amazon.com/neuron": 16, "vpc.amazonaws.com/efa": 8})
+            capabilities={"node.kubernetes.io/instance-type": instance_type}, 
+            devices={"aws.amazon.com/neuron": 16, "vpc.amazonaws.com/efa": num_efas})
 
     print(f"resourcedef: {resourcedef}")
 

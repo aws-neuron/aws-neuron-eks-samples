@@ -2,7 +2,7 @@
 
 ## Overview <a name="overview2"></a>
 
-This tutorial shows how to launch a distributed PyTorch Neuron training job on multiple Trn1 nodes within an Amazon Elastic Kubernetes Service (EKS) cluster. In this example, the BERT-large model will undergo DataParallel-based phase1 pretraining using the WikiCorpus dataset. TorchX will be used to launch the job on 2 trn1.32xlarge instances, with 32 workers per instance.
+This tutorial shows how to launch a distributed PyTorch Neuron training job on multiple Trn1 nodes within an Amazon Elastic Kubernetes Service (EKS) cluster. In this example, the BERT-large model will undergo DataParallel-based phase1 pretraining using the WikiCorpus dataset. TorchX will be used to launch the job on 2 trn1.32xlarge (or trn1n.32xlarge) instances, with 32 workers per instance.
 
 The tutorial covers all steps required to prepare the EKS environment and launch the training job:
 
@@ -95,13 +95,13 @@ Run `eksctl version` to confirm that eksctl has been installed correctly:
 
 <pre style="background: black; color: #ddd">
 bash> <b>eksctl version</b>
-0.122.0
+0.136.0
 </pre>
 
 #### Install kubectl using the following commands:
 
 ```
-curl -o kubectl https://s3.us-west-2.amazonaws.com/amazon-eks/1.23.7/2022-06-29/bin/linux/amd64/kubectl
+curl -o kubectl https://s3.us-west-2.amazonaws.com/amazon-eks/1.25.7/2023-03-17/bin/linux/amd64/kubectl
 chmod u+x kubectl
 sudo mv kubectl /usr/local/bin
 ```
@@ -110,10 +110,10 @@ Run `kubectl version --short 2>&1 | grep Client` to confirm that kubectl has bee
 
 <pre style="background: black; color: #ddd">
 bash> <b>kubectl version --short 2>&1 | grep Client</b>
-Client Version: v1.23.7-eks-4721010
+Client Version: v1.25.7-eks-a59e1f0
 </pre>
 
-**Note:** The above commands will install kubectl version `1.23.7`. If you require a different version of kubectl, please refer to the [EKS documentation](https://docs.aws.amazon.com/eks/latest/userguide/install-kubectl.html).
+**Note:** The above commands will install kubectl version `1.25.7`. If you require a different version of kubectl, please refer to the [EKS documentation](https://docs.aws.amazon.com/eks/latest/userguide/install-kubectl.html).
 
 #### Install Docker using the following commands:
 
@@ -212,7 +212,7 @@ kind: ClusterConfig
 metadata:
   name: my-trn1-cluster
   region: us-west-2
-  version: "1.23"
+  version: "1.25"
 
 iam:
   withOIDC: true
@@ -248,8 +248,8 @@ Then create the EKS Nodegroup resources CloudFormation stack using the provided 
 
 ```
 aws cloudformation create-stack \
---stack-name eks-ng-stack \
---template-body file://cfn/eks_ng_stack.yaml \
+--stack-name eks-trn1-ng-stack \
+--template-body file://cfn/eks_trn1_ng_stack.yaml \
 --parameters file://cfn_params.json \
 --capabilities CAPABILITY_IAM
 ```
@@ -257,23 +257,23 @@ aws cloudformation create-stack \
 Run the following command and wait for `StackStatus` to change from **CREATE_IN_PROGRESS** to **CREATE_COMPLETE**. When you see **CREATE_COMPLETE**, press `CTRL-C` to return to the bash prompt.
 
 ```
-watch -n10 'aws cloudformation describe-stacks --stack-name eks-ng-stack|grep StackStatus'
+watch -n10 'aws cloudformation describe-stacks --stack-name eks-trn1-ng-stack|grep StackStatus'
 ```
 
-Alternatively, you can monitor the status of the `eks-ng-stack` stack in the CloudFormation section of the AWS Console, and proceed when the stack shows **CREATE_COMPLETE**.
+Alternatively, you can monitor the status of the `eks-trn1-ng-stack` stack in the CloudFormation section of the AWS Console, and proceed when the stack shows **CREATE_COMPLETE**.
 
 <br/>
 <br/>
 
 ### 2.4 Create the EKS Trn1 Nodegroup
 
-First generate the EKS Nodegroup manifest file:
+First generate the EKS Nodegroup manifest files:
 
 ```
-./scripts/create_eks_trn1_nodegroup_manifest.sh
+./scripts/create_eks_trn1_nodegroup_manifests.sh
 ```
 
-Next, use eksctl to create the EKS Nodegroup from the manifest. This step will launch a nodegroup consisting of 2 trn1.32xlarge instances and join them to your EKS cluster:
+Next, use eksctl to create the EKS Nodegroup from the manifest. This step will launch a nodegroup consisting of 2 trn1.32xlarge instances and join them to your EKS cluster. **Note:** If you would like to use trn1n.32xlarge instances (instead of trn1.32xlarge) to take advantage of the additional networking, you can substitute "trn1n_nodegroup.yaml" in the following command:
 
 ```
 eksctl create nodegroup -f trn1_nodegroup.yaml
@@ -300,7 +300,7 @@ bash> <b>eksctl get nodegroup --cluster my-trn1-cluster -o yaml</b>
   StackName: eksctl-my-trn1-cluster-nodegroup-trn1-ng1
   <b>Status: ACTIVE</b>
   Type: managed
-  Version: "1.23"
+  Version: "1.25"
 </pre>
 
 <br/>
@@ -313,7 +313,7 @@ In order to use Trn1 instances with EKS, a few Neuron and EFA plugins are requir
 ```
 kubectl apply -f https://awsdocs-neuron.readthedocs-hosted.com/en/latest/_downloads/f57f27621e52b305dba7d624c477977a/k8s-neuron-device-plugin.yml
 kubectl apply -f https://awsdocs-neuron.readthedocs-hosted.com/en/latest/_downloads/46fb1da6e5e79c3310ebc0cbd6ad2353/k8s-neuron-device-plugin-rbac.yml
-kubectl apply -f https://raw.githubusercontent.com/aws-samples/aws-efa-eks/main/manifest/efa-k8s-device-plugin.yml
+kubectl apply -f ./manifest/efa-k8s-device-plugin.yml
 ```
 
 Next, run `kubectl get pods -n kube-system` and verify that the EFA and Neuron daemonsets are running:
@@ -336,8 +336,8 @@ kube-proxy-7rxhq                            1/1     Running   0          14h
 **Note:** If the aws-efa-k8s-device-plugin-daemonset pods indicate an error status of `CreateContainerConfigError`, please delete and re-apply the daemonset using the following commands and then re-check the daemonset status as indicated above:
 
 ```
-kubectl delete -f "https://raw.githubusercontent.com/aws-samples/aws-efa-eks/main/manifest/efa-k8s-device-plugin.yml"
-kubectl apply -f "https://raw.githubusercontent.com/aws-samples/aws-efa-eks/main/manifest/efa-k8s-device-plugin.yml"
+kubectl delete -f ./manifest/efa-k8s-device-plugin.yml
+kubectl apply -f ./manifest/efa-k8s-device-plugin.yml
 ```
 
 <br/>
@@ -387,7 +387,7 @@ pip3 install torchx[kubernetes]
 
 #### Install and configure FSx for Lustre CSI <a name="installfsxcsi"></a>
 
-In this tutorial, TorchX is used to launch a DataParallel BERT phase1 pretraining job using 64 workers across 2 trn1.32xlarge instances (32 workers per instance). 
+In this tutorial, TorchX is used to launch a DataParallel BERT phase1 pretraining job using 64 workers across 2 trn1.32xlarge (or trn1n.32xlarge) instances (with 32 workers per instance). 
 
 BERT phase1 pretraining uses a 50+ GB WikiCorpus dataset as the training dataset. For large datasets such as this, it is inefficient to include the dataset inside the training container image or to download the dataset at the beginning of each training job. A more efficient approach is to use a Kubernetes persistent shared storage volume to host the dataset.
 
@@ -451,15 +451,18 @@ fsx-claim   Bound    pvc-abcdabcd   1200Gi     RWX            fsx-sc         6m2
 
 ## 3. Training Job Preparation & Launch <a name="trainingjobprep"></a>
 
-### 3.1 Build the BERT pretraining container image and push it to ECR<a name="buildtrainingcontainer"></a>
+### 3.1 Build the BERT pretraining and command shell container images and push them to ECR<a name="buildtrainingcontainer"></a>
 
-Run the following commands on the jump host to build the pretraining container image and push it into your ECR repository:
+Run the following commands on the jump host to build the pretraining and command shell container images and push them into your ECR repository:
 
 ```
+export DOCKER_BUILDKIT=1
 ECR_REPO=$(aws ecr describe-repositories --repository-name eks_torchx_tutorial \
     --query repositories[0].repositoryUri --output text)
-docker build ./docker -t $ECR_REPO:bert_pretrain
+docker build ./docker -f docker/Dockerfile.bert_pretrain -t $ECR_REPO:bert_pretrain
+docker build ./docker -f docker/Dockerfile.cmd_shell -t $ECR_REPO:cmd_shell
 docker push $ECR_REPO:bert_pretrain
+docker push $ECR_REPO:cmd_shell
 ```
 
 <br/>
@@ -540,8 +543,11 @@ torchx run \
     --script dp_bert_large_hf_pretrain_hdf5.py \
     --bf16 True \
     --cacheset bert-large \
-    --precompile True
+    --precompile True \
+    --instance_type trn1.32xlarge
 ```
+
+*Note:* if you are using trn1n instances, please adjust the `--instance_type` parameter above to be `trn1n.32xlarge`.
 
 In the above command you will note various options that are passed to the `torchx run` command:
 
@@ -551,13 +557,14 @@ In the above command you will note various options that are passed to the `torch
 * `lib/trn1_dist_ddp.py:generateAppDef`: Path to the Python function used to programmatically create the TorchX AppDef for this job. See [lib/trn1_dist_ddp.py](lib/trn1_dist_ddp.py) for additional details.
 * `--name bertcompile`: Name of this TorchX job
 * `--script_args "..."`: Command-line arguments that will be passed to the training script. When performing precompilation, it is advised to limit the number of training steps to ~10 as we do here using `--steps_this_run 10`
-* `--nnodes 2`: Number of trn1.32xl nodes required for this job
+* `--nnodes 2`: Number of trn1 nodes required for this job
 * `--nproc_per_node 32`: Number of training processes to run per node
 * `--image $ECR_REPO:bert_pretrain`: The container image to use for the training job
 * `--script dp_bert_large_hf_pretrain_hdf5.py`: Name of the training script to run inside the training container
 * `--bf16 True`: Enable BF16 data type for training
 * `--cacheset bert-large`: A user-specified string used to prefix the Neuron and Transformers caches on shared storage. The cacheset can be shared across TorchX jobs but should not be used by jobs that will run concurrently. If multiple concurrent jobs share a cacheset, cache corruption could occur.
 * `--precompile True`: Launch the training script using Neuron's `neuron_parallel_compile` tool in order to precompile the graphs
+* `--instance_type trn1.32xlarge`: Specify which type of trn1 instance to use for this job (trn1.32xlarge or trn1n.32xlarge)
 
 <br/>
 
@@ -587,7 +594,7 @@ The precompilation job will run for ~15 minutes. Once complete, you will see the
 <br/>
 <br/>
 
-### 3.4 Launch BERT pretraining job using 64 workers across 2 trn1.32xlarge instances <a name="launchtraining"></a>
+### 3.4 Launch BERT pretraining job using 64 workers across 2 trn1.32xlarge (or trn1n.32xlarge) instances <a name="launchtraining"></a>
 
 Run the following commands to launch the 64-worker BERT pretraining job on the EKS cluster:
 
@@ -608,8 +615,11 @@ torchx run \
     --image $ECR_REPO:bert_pretrain \
     --script dp_bert_large_hf_pretrain_hdf5.py \
     --bf16 True \
-    --cacheset bert-large
+    --cacheset bert-large \
+    --instance_type trn1.32xlarge
 ```
+
+*Note:* if you are using trn1n instances, please adjust the `--instance_type` parameter above to be `trn1n.32xlarge`.
 
 <br/>
 <br/>
@@ -747,12 +757,13 @@ kubectl delete pods --all
 kubectl delete -f storageclass.yaml
 kubectl delete -f claim.yaml
 
-# Delete nodegroup
-eksctl delete nodegroup trn1-ng1 --cluster my-trn1-cluster --wait
+# Delete nodegroup - run the applicable command depending on which instance type you are using
+eksctl delete nodegroup trn1-32xl-ng1 --cluster my-trn1-cluster --wait --approve    # for trn1
+eksctl delete nodegroup trn1n-32xl-ng1 --cluster my-trn1-cluster --wait --approve   # for trn1n
 
 # Delete Cluster resources
-aws cloudformation delete-stack --stack-name eks-ng-stack
-aws cloudformation wait stack-delete-complete --stack-name eks-ng-stack
+aws cloudformation delete-stack --stack-name eks-trn1-ng-stack
+aws cloudformation wait stack-delete-complete --stack-name eks-trn1-ng-stack
 eksctl delete cluster my-trn1-cluster
 
 # Delete Container repository

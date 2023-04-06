@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
-Description: Amazon EKS - Node Group
+Description: Amazon EKS - Nodegroup resources for trn1.32xlarge and trn1n.32xlarge instances
 
 Metadata:
   "AWS::CloudFormation::Interface":
@@ -13,8 +13,6 @@ Metadata:
       - Label:
           default: Worker Node Configuration
         Parameters:
-          - NodeGroupName
-          - NodeInstanceType
           - NodeImageIdSSMParam
           - NodeImageId
           - NodeVolumeSize
@@ -38,10 +36,6 @@ Parameters:
     Type: String
     Description: The cluster name provided when the cluster was created. If it is incorrect, nodes will not be able to join the cluster.
 
-  NodeGroupName:
-    Type: String
-    Description: Unique identifier for the Node Group.
-
   NodeImageId:
     Type: String
     Default: ""
@@ -49,16 +43,8 @@ Parameters:
 
   NodeImageIdSSMParam:
     Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
-    Default: /aws/service/eks/optimized-ami/1.23/amazon-linux-2-gpu/recommended/image_id
+    Default: /aws/service/eks/optimized-ami/1.25/amazon-linux-2-gpu/recommended/image_id
     Description: AWS Systems Manager Parameter Store parameter of the AMI ID for the worker node instances.
-
-  NodeInstanceType:
-    Type: String
-    Default: trn1.32xlarge
-    AllowedValues:
-      - trn1.32xlarge
-    ConstraintDescription: Must be a valid EC2 instance type
-    Description: EC2 instance type for the node instances
 
   NodeVolumeSize:
     Type: Number
@@ -90,7 +76,12 @@ Conditions:
 
 Resources:
 
-  PlacementGroup:
+  PlacementGroupTrn1:
+   Type: AWS::EC2::PlacementGroup
+   Properties:
+     Strategy: cluster
+
+  PlacementGroupTrn1n:
    Type: AWS::EC2::PlacementGroup
    Properties:
      Strategy: cluster
@@ -283,7 +274,7 @@ Resources:
       SourceSecurityGroupId: !Ref NodeSecurityGroup
       ToPort: 988
 
-  NodeLaunchTemplate:
+  NodeLaunchTemplateTrn1:
     Type: "AWS::EC2::LaunchTemplate"
     Properties:
       LaunchTemplateData:
@@ -297,12 +288,12 @@ Resources:
           - HasNodeImageId
           - Ref: NodeImageId
           - Ref: NodeImageIdSSMParam
-        InstanceType: !Ref NodeInstanceType
+        InstanceType: trn1.32xlarge
         TagSpecifications:
           - ResourceType: instance
             Tags:
               - Key: Name
-                Value: !Sub ${ClusterName}-${NodeGroupName}
+                Value: !Sub ${ClusterName}-trn1-32xl-ng1
         NetworkInterfaces:
           - Description: NetworkInterfaces Configuration For EFA and EKS
             NetworkCardIndex: 0
@@ -361,7 +352,170 @@ Resources:
               - !Ref NodeSecurityGroup
             InterfaceType: efa
         Placement:
-          GroupName: !Ref PlacementGroup
+          GroupName: !Ref PlacementGroupTrn1
+        UserData: !Base64
+          "Fn::Sub": |
+            Content-Type: multipart/mixed; boundary="==BOUNDARY=="
+            MIME-Version: 1.0
+
+            --==BOUNDARY==
+            Content-Type: text/cloud-boothook; charset="us-ascii"
+            cloud-init-per once yum_wget yum install -y wget
+            cloud-init-per once wget_efa wget -q --timeout=20 https://s3-us-west-2.amazonaws.com/aws-efa-installer/aws-efa-installer-latest.tar.gz -O /tmp/aws-efa-installer-latest.tar.gz
+
+            cloud-init-per once tar_efa tar -xf /tmp/aws-efa-installer-latest.tar.gz -C /tmp
+            pushd /tmp/aws-efa-installer
+            cloud-init-per once install_efa ./efa_installer.sh -y -g
+            pop /tmp/aws-efa-installer
+
+            cloud-init-per once efa_info /opt/amazon/efa/bin/fi_info -p efa
+
+            --==BOUNDARY==
+            Content-Type: text/x-shellscript; charset="us-ascii"
+
+            #!/bin/bash
+            set -o xtrace
+            /etc/eks/bootstrap.sh ${ClusterName} ${BootstrapArguments}
+            --==BOUNDARY==--
+
+        MetadataOptions:
+          "HttpPutResponseHopLimit": 2
+
+  NodeLaunchTemplateTrn1n:
+    Type: "AWS::EC2::LaunchTemplate"
+    Properties:
+      LaunchTemplateData:
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              DeleteOnTermination: true
+              VolumeSize: !Ref NodeVolumeSize
+              VolumeType: gp3
+        ImageId: !If
+          - HasNodeImageId
+          - Ref: NodeImageId
+          - Ref: NodeImageIdSSMParam
+        InstanceType: trn1n.32xlarge
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub ${ClusterName}-trn1n-32xl-ng1
+        NetworkInterfaces:
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 0
+            DeviceIndex: 0
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 1
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 2
+            DeviceIndex: 2
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 3
+            DeviceIndex: 3
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 4
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 5
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 6
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 7
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 8
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 9
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 10 
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 11
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 12
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 13
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 14
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 15
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+        Placement:
+          GroupName: !Ref PlacementGroupTrn1n
         UserData: !Base64
           "Fn::Sub": |
             Content-Type: multipart/mixed; boundary="==BOUNDARY=="
@@ -395,17 +549,17 @@ Outputs:
     Description: EKS Cluster
     Value: !Ref ClusterName
 
-  NodeGroupName:
-    Description: Name of NodeGroup
-    Value: !Ref NodeGroupName
-
   NodeInstanceRole:
     Description: The node instance role
     Value: !GetAtt NodeInstanceRole.Arn
 
-  LaunchTemplateID:
-    Description: The launch template created
-    Value: !Ref NodeLaunchTemplate
+  LaunchTemplateIdTrn1:
+    Description: The launch template created for Trn1.32xlarge instances
+    Value: !Ref NodeLaunchTemplateTrn1
+
+  LaunchTemplateIdTrn1n:
+    Description: The launch template created for Trn1n.32xlarge instances
+    Value: !Ref NodeLaunchTemplateTrn1n
 
   NodeSecurityGroup:
     Description: SG used by all nodes in this NodeGroup

@@ -6,7 +6,7 @@ ECR_REPO=$(aws ecr describe-repositories --repository-name eks_torchx_tutorial \
 PASSWORD=$(head /dev/random|md5sum|head -c12)
 
 echo -e "Building Tensorboard container"
-docker build --build-arg TB_PASSWORD=$PASSWORD ./tensorboard -t $ECR_REPO:tensorboard
+DOCKER_BUILDKIT=1 docker build --build-arg TB_PASSWORD=$PASSWORD ./docker -f ./docker/Dockerfile.tensorboard -t $ECR_REPO:tensorboard
 echo -e "\nPushing Tensorboard container to $ECR_REPO"
 docker push $ECR_REPO:tensorboard
 

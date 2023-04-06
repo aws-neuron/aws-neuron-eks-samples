@@ -9,7 +9,7 @@ kind: ClusterConfig
 metadata:
   name: my-trn1-cluster
   region: $REGION_CODE
-  version: "1.23"
+  version: "1.25"
 
 iam:
   withOIDC: true

@@ -10,9 +10,9 @@ metadata:
 spec:
   containers:
   - name: app
-    image: $ECR_REPO:bert_pretrain
+    image: $ECR_REPO:cmd_shell
     command: ["/bin/sh", "-c"]
-    args: ["yum install -y -q tar awscli; while true; do sleep 30; done"]
+    args: ["while true; do sleep 30; done"]
     volumeMounts:
     - name: persistent-storage
       mountPath: /data
