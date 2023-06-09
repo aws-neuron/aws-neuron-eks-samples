@@ -5,7 +5,7 @@ REGION_CODE=$(aws configure get region)
 
 if [[ $REGION_CODE == "us-east-1" ]]
 then
-	AZ1="use1-az4"
+	AZ1="use1-az6"
 	AZ2="use1-az5"
 elif [[ $REGION_CODE == "us-west-2" ]]
 then
