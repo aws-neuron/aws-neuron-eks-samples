@@ -1,0 +1,3 @@
+oci-image-build/cdk.out	
+oci-image-build/*.json
+oci-image-build/node_modules
