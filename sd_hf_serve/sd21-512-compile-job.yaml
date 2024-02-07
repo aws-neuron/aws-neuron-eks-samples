@@ -1,0 +1,42 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sd21-inf2-compile
+spec:
+  template:
+    spec:
+      nodeSelector:
+        karpenter.sh/nodepool: inf2
+      restartPolicy: OnFailure
+      serviceAccountName: sd21-sa
+      volumes:
+      - name: dshm
+        emptyDir:
+          medium: Memory
+      containers:
+      - name: app
+        image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/stablediffusion:amd64-neuron
+        imagePullPolicy: Always
+        volumeMounts:
+          - mountPath: /dev/shm
+            name: dshm
+        command: ["/start.sh"]
+        args: ["compile"]
+        resources:
+          limits:
+            aws.amazon.com/neuron: 1
+        env:
+        - name: DEVICE
+          value: "xla"
+        - name: BUCKET
+          value: "neuron-sd-infer"
+        - name: MODEL_ID
+          value: "stabilityai/stable-diffusion-2-1-base"
+        - name: COMPILER_WORKDIR_ROOT
+          value: "sd2_compile_dir_512"
+        - name: MODEL_FILE
+          value: "stable-diffusion-2-1-base"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name

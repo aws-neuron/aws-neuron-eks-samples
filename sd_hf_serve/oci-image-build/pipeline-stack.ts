@@ -2,6 +2,7 @@ import { Stack, StackProps,CfnParameter,SecretValue} from 'aws-cdk-lib';
 import { Construct } from 'constructs'
 import * as codecommit from 'aws-cdk-lib/aws-codecommit';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as codebuild from 'aws-cdk-lib/aws-codebuild';
 import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
 import * as codepipeline_actions from 'aws-cdk-lib/aws-codepipeline-actions';
@@ -18,6 +19,8 @@ export class PipelineStack extends Stack {
   const BASE_REPO = new CfnParameter(this,"BASEREPO",{type:"String"});
   const BASE_IMAGE_AMD_XLA_TAG = new CfnParameter(this,"BASEIMAGEAMDXLATAG",{type:"String"});
   const IMAGE_AMD_XLA_TAG = new CfnParameter(this,"IMAGEAMDXLATAG",{type:"String"});
+  const MODEL_FILE = new CfnParameter(this,"MODELFILE",{type:"String"});
+  const BUCKET = new CfnParameter(this,"BUCKET",{type:"String"});
   const GITHUB_OAUTH_TOKEN = new CfnParameter(this,"GITHUBOAUTHTOKEN",{type:"String"});
   const GITHUB_USER = new CfnParameter(this,"GITHUBUSER",{type:"String"});
   const GITHUB_REPO = new CfnParameter(this,"GITHUBREPO",{type:"String"});
@@ -29,6 +32,10 @@ export class PipelineStack extends Stack {
   });
   */
   const base_registry = ecr.Repository.fromRepositoryName(this,`base_repo`,BASE_REPO.valueAsString)
+  
+  const model_bucket = new s3.Bucket(this,'Bucket', {
+    bucketName:BUCKET.valueAsString,
+  });
 
   //create a roleARN for codebuild 
   const buildRole = new iam.Role(this, 'BaseCodeBuildDeployRole',{
@@ -75,7 +82,9 @@ export class PipelineStack extends Stack {
               `export BASE_REPO="${BASE_REPO.valueAsString}"`,
               `export IMAGE_TAG="${IMAGE_AMD_XLA_TAG.valueAsString}"`,
               `export BASE_IMAGE_TAG="${BASE_IMAGE_AMD_XLA_TAG.valueAsString}"`,
-              `cd app`,
+              `export BUCKET="${BUCKET.valueAsString}"`,
+              `export MODEL_FILE="${MODEL_FILE.valueAsString}"`,
+              `cd sd_hf_serve/app`,
               `chmod +x ./build.sh && ./build.sh`
             ],
           }
@@ -107,7 +116,11 @@ export class PipelineStack extends Stack {
               `export BASE_REPO="${BASE_REPO.valueAsString}"`,
               `export IMAGE_TAG="${IMAGE_AMD_XLA_TAG.valueAsString}"`,
               `export BASE_IMAGE_TAG="${BASE_IMAGE_AMD_XLA_TAG.valueAsString}"`,
-              `cd app`,
+              `export BUCKET="${BUCKET.valueAsString}"`,
+              `export MODEL_FILE="${MODEL_FILE.valueAsString}"`,
+              `touch ${MODEL_FILE.valueAsString}.tar.gz`,
+              `aws s3 cp ${MODEL_FILE.valueAsString}.tar.gz s3://${BUCKET.valueAsString}/${MODEL_FILE.valueAsString}.tar.gz`,
+              `cd sd_hf_serve/app`,
               `chmod +x ./build-assets.sh && ./build-assets.sh`
             ],
           }
