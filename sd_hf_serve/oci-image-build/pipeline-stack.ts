@@ -33,9 +33,11 @@ export class PipelineStack extends Stack {
   */
   const base_registry = ecr.Repository.fromRepositoryName(this,`base_repo`,BASE_REPO.valueAsString)
   
-  const model_bucket = new s3.Bucket(this,'Bucket', {
+  /* const model_bucket = new s3.Bucket(this,'Bucket', {
     bucketName:BUCKET.valueAsString,
-  });
+    accessControl: s3.BucketAccessControl.BUCKET_OWNER_FULL_CONTROL,
+  });*/
+  const model_bucket = s3.Bucket.fromBucketName(this,'Bucket',BUCKET.valueAsString)
 
   //create a roleARN for codebuild 
   const buildRole = new iam.Role(this, 'BaseCodeBuildDeployRole',{

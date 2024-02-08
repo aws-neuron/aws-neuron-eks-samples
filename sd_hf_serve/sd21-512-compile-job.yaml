@@ -8,7 +8,7 @@ spec:
       nodeSelector:
         karpenter.sh/nodepool: inf2
       restartPolicy: OnFailure
-      serviceAccountName: sd21-sa
+      #serviceAccountName: sd21-sa
       volumes:
       - name: dshm
         emptyDir:
@@ -24,7 +24,7 @@ spec:
         args: ["compile"]
         resources:
           limits:
-            aws.amazon.com/neuron: 1
+            aws.amazon.com/neuron: 2
         env:
         - name: DEVICE
           value: "xla"

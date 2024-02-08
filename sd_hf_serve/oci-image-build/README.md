@@ -16,7 +16,7 @@ export GITHUB_USER=yahavb
 export GITHUB_REPO=aws-neuron-eks-samples
 export MODEL_DIR=sd21_compile_dir
 export MODEL_FILE=stable-diffusion-2-1-base
-export BUCKET=neuron-sd-infer
+export BUCKET=sdinfer
 ```
 
 ```bash
