@@ -178,16 +178,26 @@ app = FastAPI()
 io = gr.Interface(fn=text2img,inputs=["text"],
     outputs = [gr.Image(height=512, width=512), "text"],
     title = 'Stable Diffusion 2.1 in AWS EC2 ' + device + ' instance')
+
 @app.get("/")
 def read_main():
-  return {"message": "This is Stable Diffusion 2.1 in AWS EC2 " + device + "instance; try /load/{n_runs} or /serve"}
+  return {"message": "This is "+model_id+" on AWS EC2 " + device + "instance; try /load/{n_runs}, /serve, /health, or /ready"}
+
 @app.get("/load/{n_runs}")
 def load(n_runs: int):
   prompt = "a photo of an astronaut riding a horse on mars"
   #n_runs = 20
   report=benchmark(n_runs, "stable_diffusion_512", pipe, prompt)
   return {"message": "benchmark report:"+report}
+
 @app.get("/health")
 def load():
+  print("healthy")
   return {"message": "healthy"}
+
+@app.get("/readiness")
+def load():
+  print("ready")
+  return {"message": "ready"}
+
 app = gr.mount_gradio_app(app, io, path="/serve")

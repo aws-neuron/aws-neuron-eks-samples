@@ -8,6 +8,7 @@ spec:
       nodeSelector:
         karpenter.sh/nodepool: inf2
       restartPolicy: OnFailure
+      schedulerName: my-scheduler
       #serviceAccountName: sd21-sa
       volumes:
       - name: dshm
