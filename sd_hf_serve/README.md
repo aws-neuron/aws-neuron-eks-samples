@@ -3,7 +3,7 @@
 This is a StableDiffusionPipeline based on `stabilityai/stable-diffusion-2-1-base`. Updated compile and benchmark code is in [sd2_512_benchmark](https://github.com/aws-neuron/aws-neuron-sdk/blob/master/src/benchmark/pytorch/sd2_512_benchmark.py) and [sd2_512_compile](https://github.com/aws-neuron/aws-neuron-sdk/blob/master/src/benchmark/pytorch/sd2_512_compile.py)
 
 * [Create cluster with Karpenter node pools that provisions `inf2` instances](https://karpenter.sh/docs/getting-started/getting-started-with-karpenter/)
-*  Configure pods to use Amazon vpc cni
+* [Configure pods to use Amazon vpc cni](https://docs.aws.amazon.com/eks/latest/userguide/managing-vpc-cni.html)
 ```bash
 aws eks create-addon --cluster-name ${CLUSTER_NAME} --addon-name vpc-cni --addon-version v1.16.2-eksbuild.1 \
     --service-account-role-arn arn:aws:iam::${AWS_ACCOUNT_ID}:role/AmazonEKSVPCCNIRole
