@@ -7,6 +7,10 @@ metadata:
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '10'
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '9'
+    alb.ingress.kubernetes.io/healthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: '10'
     alb.ingress.kubernetes.io/success-codes: '200-301'
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
     alb.ingress.kubernetes.io/backend-protocol: HTTP
@@ -14,13 +18,14 @@ metadata:
   labels:
     app: sd21-inf2-serve-ingress
 spec:
+  ingressClassName: alb
   rules:
     - http:
         paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service: 
-                name: sd21-512-svc
-                port: 
-                  number: 80
+        - path: /
+          pathType: Prefix
+          backend:
+            service: 
+              name: sd21-512-svc
+              port: 
+                number: 80

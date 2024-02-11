@@ -28,6 +28,9 @@ spec:
         volumeMounts:
         - name: workdir
           mountPath: /model
+        resources:
+          limits:
+            aws.amazon.com/neuron: 0
         command:
         - /bin/bash
         - "-exc"
@@ -66,12 +69,15 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
-        #readinessProbe:
-        #  httpGet:
-        #    path: /health
-        #    port: 8000
-        #  initialDelaySeconds: 120
-        #  periodSeconds: 3
+        ports:
+          - containerPort: 8000
+            protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readiness
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
       volumes:
       - name: workdir
         emptyDir: {}

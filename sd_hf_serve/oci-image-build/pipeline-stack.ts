@@ -38,7 +38,7 @@ export class PipelineStack extends Stack {
     accessControl: s3.BucketAccessControl.BUCKET_OWNER_FULL_CONTROL,
   });*/
   const model_bucket = s3.Bucket.fromBucketName(this,'Bucket',BUCKET.valueAsString)
-
+   
   //create a roleARN for codebuild 
   const buildRole = new iam.Role(this, 'BaseCodeBuildDeployRole',{
     roleName: stack+"BaseCodeBuildDeployRole",
@@ -120,8 +120,8 @@ export class PipelineStack extends Stack {
               `export BASE_IMAGE_TAG="${BASE_IMAGE_AMD_XLA_TAG.valueAsString}"`,
               `export BUCKET="${BUCKET.valueAsString}"`,
               `export MODEL_FILE="${MODEL_FILE.valueAsString}"`,
-              `touch ${MODEL_FILE.valueAsString}.tar.gz`,
-              `aws s3 cp ${MODEL_FILE.valueAsString}.tar.gz s3://${BUCKET.valueAsString}/${MODEL_FILE.valueAsString}.tar.gz`,
+              //`touch ${MODEL_FILE.valueAsString}.tar.gz`,
+              //`aws s3 cp ${MODEL_FILE.valueAsString}.tar.gz s3://${BUCKET.valueAsString}/${MODEL_FILE.valueAsString}.tar.gz`,
               `cd sd_hf_serve/app`,
               `chmod +x ./build-assets.sh && ./build-assets.sh`
             ],
