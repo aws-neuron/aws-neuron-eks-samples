@@ -3,6 +3,12 @@
 This is a StableDiffusionPipeline based on `stabilityai/stable-diffusion-2-1-base`. Updated compile and benchmark code is in [sd2_512_benchmark](https://github.com/aws-neuron/aws-neuron-sdk/blob/master/src/benchmark/pytorch/sd2_512_benchmark.py) and [sd2_512_compile](https://github.com/aws-neuron/aws-neuron-sdk/blob/master/src/benchmark/pytorch/sd2_512_compile.py)
 
 * [Create cluster with Karpenter node pools that provisions `inf2` instances](https://karpenter.sh/docs/getting-started/getting-started-with-karpenter/)
+*  Configure pods to use Amazon vpc cni
+```bash
+aws eks create-addon --cluster-name ${CLUSTER_NAME} --addon-name vpc-cni --addon-version v1.16.2-eksbuild.1 \
+    --service-account-role-arn arn:aws:iam::${AWS_ACCOUNT_ID}:role/AmazonEKSVPCCNIRole
+aws eks describe-addon --cluster-name ${CLUSTER_NAME} --addon-name vpc-cni --query addon.addonVersion --output text
+```
 *  Deploy karpenter nodepool for inferentia
 ```bash
   cat inf2-nodepool.yaml | envsubst | kubectl apply -f -  
@@ -33,3 +39,7 @@ kubectl apply -f sd21-512-compile-job.yaml
 kubectl apply -f sd21-512-server-deploy.yaml
 ```
 * [Deploy AWS Load Balancer controller](https://docs.aws.amazon.com/eks/latest/userguide/aws-load-balancer-controller.html) to enable public ingress access to the inference pods 
+```bash
+kubectl apply -f sd21-512-serve-svc.yaml
+kubectl apply -f sd21-512-serve-ingress.yaml
+```
