@@ -186,18 +186,15 @@ def read_main():
 @app.get("/load/{n_runs}")
 def load(n_runs: int):
   prompt = "a photo of an astronaut riding a horse on mars"
-  #n_runs = 20
   report=benchmark(n_runs, "stable_diffusion_512", pipe, prompt)
   return {"message": "benchmark report:"+report}
 
 @app.get("/health")
 def load():
-  print("healthy")
   return {"message": "healthy"}
 
 @app.get("/readiness")
 def load():
-  print("ready")
   return {"message": "ready"}
 
 app = gr.mount_gradio_app(app, io, path="/serve")
