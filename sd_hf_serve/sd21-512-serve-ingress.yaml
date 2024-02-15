@@ -14,13 +14,14 @@ metadata:
     alb.ingress.kubernetes.io/success-codes: '200-301'
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
     alb.ingress.kubernetes.io/backend-protocol: HTTP
-    alb.ingress.kubernetes.io/load-balancer-name: sd21-inf2-serve
+    alb.ingress.kubernetes.io/load-balancer-name: sd21inf2serve
+    alb.ingress.kubernetes.io/target-group-attributes: stickiness.enabled=true,stickiness.lb_cookie.duration_seconds=60
   labels:
     app: sd21-inf2-serve-ingress
 spec:
   ingressClassName: alb
   rules:
-    - http:
+     - http:
         paths:
         - path: /
           pathType: Prefix

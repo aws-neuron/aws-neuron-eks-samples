@@ -28,9 +28,6 @@ spec:
         volumeMounts:
         - name: workdir
           mountPath: /model
-        resources:
-          limits:
-            aws.amazon.com/neuron: 0
         command:
         - /bin/bash
         - "-exc"
@@ -53,7 +50,7 @@ spec:
         args: ["run"]
         resources:
           limits:
-            aws.amazon.com/neuron: 1
+            aws.amazon.com/neuron: 2
         env:
         - name: DEVICE
           value: "xla"
