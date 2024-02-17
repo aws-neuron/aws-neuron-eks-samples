@@ -2,7 +2,8 @@
 
 Inference services need to be (1) reliable, (2) performant, and (3) cost-effective. Reliability involves quick and automatic recovering from hardware and software failures. Performant means low latency response to user requests that includes scaling compute accelerators seamlessly, quickly, and keeping resource utilization optimal and finally, releasing resources not needed.  
 
- 
+This solution describes an inference pipeline that implements reliable, performant and cost-effective AWS services using EC2 Inferentia instances.  
+![alt text](./aws-neuron-eks-sample-sd_hf_serve.png)
 
 For reliability, we use Karpenter. Karpenter node-pool manages Inferentia node lifecycle. Karpenter adds Inferentia nodes to handle unschedulable pods, schedules pods on those nodes, and removes them when not needed. 
 
