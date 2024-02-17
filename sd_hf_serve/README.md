@@ -7,7 +7,7 @@ This solution describes an inference pipeline that implements reliable, performa
 
 For reliability, we use Karpenter. Karpenter node-pool manages Inferentia node lifecycle. Karpenter adds Inferentia nodes to handle unschedulable pods, schedules pods on those nodes, and removes them when not needed. 
 
-Our NodePool uses the instance-familiy key to specify the instances needed i.e., inf2.xlarge, inf2.8xlarge, inf2.24xlarge, and inf2.48xlarge. 
+Our [NodePool](inf2-nodepool.yaml) uses the instance-familiy key to specify the instances needed i.e., `inf2.xlarge`, `inf2.8xlarge`, `inf2.24xlarge`, and `inf2.48xlarge`. 
 
 ```yaml
        - key: karpenter.k8s.aws/instance-family
