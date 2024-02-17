@@ -2,7 +2,7 @@
 
 Inference services need to be (1) reliable, (2) performant, and (3) cost-effective. Reliability involves quick and automatic recovering from hardware and software failures. Performant means low latency response to user requests that includes scaling compute accelerators seamlessly, quickly, and keeping resource utilization optimal and finally, releasing resources not needed.  
 
-This solution describes an inference pipeline that implements reliable, performant and cost-effective AWS services using EC2 Inferentia instances.  
+This solution describes a `stabilityai/stable-diffusion-2-1-base` [inference pipeline](oci-image-build) that implements reliable, performant and cost-effective AWS services using EC2 Inferentia instances. CodePipeline orchestrates CodeBuild DLC-based container images that are sourced in github repository and pushed to ECR. We compile the model with a [K8s batch/v1 Job](sd21-512-compile-job.yaml) that stores it in S3. Next, we deploy [K8s apps/v1 Deployment](sd21-512-serve-deploy.yaml) that pulls the model from S3 and instanciate it from images stored in ECR. Finally, we deploy [networking.k8s.io/v1 Ingress](sd21-512-serve-ingress.yaml) that builds AWS LoadBalancer and TargetGroups that auto discover the pods that power the Inference app (Gardio). 
 ![alt text](./sdhfserve.png)
 
 For reliability, we use Karpenter. Karpenter node-pool manages Inferentia node lifecycle. Karpenter adds Inferentia nodes to handle unschedulable pods, schedules pods on those nodes, and removes them when not needed. 
@@ -52,6 +52,32 @@ The solution performance comprises of the time it takes to bring neuron devices 
     volumes:
       - name: workdir
         emptyDir: {}
+```
+
+Gradio app networking rules are defined by the Ingress deployment, which includes application readiness, health, and traffic routing rules like session stickiness. Readiness and health rules need to align with the K8s deployment specification to minimize end-user impact during unexpected failures or scale-down events. e.g., 
+
+```yaml
+        readinessProbe:
+          httpGet:
+            path: /readiness
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+```
+
+Tell Kubelet to consider the pod ready when HTTP Get every 10 seconds to /readiness URI on the pod is successful only after 60 seconds. This will allow the pod to load the model from external stores such as Hugging Face and S3. The Ingress annotations will instruct ALB to probe the pod /health URI every 10 seconds to consider the pod healthy.  
+
+```yaml
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '10'
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '9'
+    alb.ingress.kubernetes.io/healthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: '3'
+    alb.ingress.kubernetes.io/success-codes: '200-301'
 ```
 
 This is a StableDiffusionPipeline based on `stabilityai/stable-diffusion-2-1-base`. Updated compile and benchmark code is in [sd2_512_benchmark](https://github.com/aws-neuron/aws-neuron-sdk/blob/master/src/benchmark/pytorch/sd2_512_benchmark.py) and [sd2_512_compile](https://github.com/aws-neuron/aws-neuron-sdk/blob/master/src/benchmark/pytorch/sd2_512_compile.py)
