@@ -128,3 +128,64 @@ kubectl apply -f sd21-512-serve-svc.yaml
 kubectl apply -f sd21-512-serve-ingress.yaml
 ```
 
+* The final step is to discover the Gardio app endpoint and the pods that will process the user's real-time inference requests. 
+
+```bash
+kubectl get ingress
+NAME               CLASS   HOSTS   ADDRESS                                                PORTS   AGE
+sd21-512-ingress   alb     *       sd21inf2serve-1693537287.us-west-2.elb.amazonaws.com   80      1h
+[sd_hf_serve]$kubectl get po
+NAME                               READY   STATUS    RESTARTS   AGE
+sd21-inf2-serve-589566d645-2ktjf   1/1     Running   0          1h
+```
+
+Note the pod `STATUS` which indicates that `/readiness` requests return 200 responses.
+
+The pod logs confirm that:
+
+```bash
+kubectl logs sd21-inf2-serve-589566d645-2ktjf
+INFO:     192.168.183.154:41638 - "GET /readiness HTTP/1.1" 200 OK
+INFO:     192.168.92.117:38404 - "GET /health HTTP/1.1" 200 OK
+INFO:     192.168.44.216:7670 - "GET /health HTTP/1.1" 200 OK
+INFO:     192.168.10.49:57274 - "GET /health HTTP/1.1" 200 OK
+INFO:     192.168.183.154:46682 - "GET /readiness HTTP/1.1" 200 OK
+INFO:     192.168.92.117:56820 - "GET /health HTTP/1.1" 200 OK
+INFO:     192.168.44.216:32514 - "GET /health HTTP/1.1" 200 OK
+INFO:     192.168.10.49:26812 - "GET /health HTTP/1.1" 200 OK
+```
+
+Note that the pod is powered by an `inf2.xlarge` instance that satisfies `aws.amazon.com/neuron: 1` resource request. 
+```bash
+kubectl get no -L node.kubernetes.io/instance-type
+NAME                                            STATUS   ROLES    AGE     VERSION               INSTANCE-TYPE
+ip-192-168-183-154.us-west-2.compute.internal   Ready    <none>   1h   v1.28.5-eks-5e0fdde   inf2.xlarge
+ip-192-168-53-23.us-west-2.compute.internal     Ready    <none>   2d     v1.28.5-eks-5e0fdde   m5.large
+ip-192-168-7-215.us-west-2.compute.internal     Ready    <none>   2d     v1.28.5-eks-5e0fdde   m5.large
+```
+Invoking the Gradio app endpoint:
+
+ ```bash
+curl sd21inf2serve-1693537287.us-west-2.elb.amazonaws.com
+{"message":"This is stabilityai/stable-diffusion-2-1-base on AWS EC2 xlainstance; try /load/{n_runs}, /serve, /health, or /ready"}
+```
+
+Indicates the app's supported API calls. We use /serve to invoke the Gardio app for images. 
+![alt text](./sdhfserve1.png)
+
+* Scale the Gardio app from 1 pod to 2 and notice Karpenter brings another `inf2.xlarge` online to power the addtional pod. 
+```bash
+kubectl scale deploy sd21-inf2-serve --replicas=2
+....
+kubectl get no -L node.kubernetes.io/instance-type
+NAME                                            STATUS   ROLES    AGE     VERSION               INSTANCE-TYPE
+ip-192-168-183-154.us-west-2.compute.internal   Ready    <none>   1h   v1.28.5-eks-5e0fdde   inf2.xlarge
+ip-192-168-53-23.us-west-2.compute.internal     Ready    <none>   2d   v1.28.5-eks-5e0fdde   m5.large
+ip-192-168-7-215.us-west-2.compute.internal     Ready    <none>   2d   v1.28.5-eks-5e0fdde   m5.large
+ip-192-168-74-41.us-west-2.compute.internal     Ready    <none>   10m  v1.28.5-eks-5e0fdde  inf2.xlarge
+...
+kubectl get po
+NAME                               READY   STATUS    RESTARTS   AGE
+sd21-inf2-serve-589566d645-2ktjf   1/1     Running   0          1h
+sd21-inf2-serve-589566d645-g6jvw   1/1     Running   0          10m
+``` 
