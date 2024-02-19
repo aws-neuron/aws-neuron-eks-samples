@@ -1,4 +1,9 @@
 #!/bin/bash -x
+docker logout
+aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin 763104351884.dkr.ecr.us-east-1.amazonaws.com
+docker pull 763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-inference-neuronx:1.13.1-neuronx-py310-sdk2.15.0-ubuntu20.04
+docker images
+docker logout
 
 export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --output text --query Account)
 
