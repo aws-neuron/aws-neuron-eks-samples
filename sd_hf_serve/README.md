@@ -2,7 +2,7 @@
 
 Inference services need to be (1) reliable, (2) performant, and (3) cost-effective. Reliability involves quick and automatic recovering from hardware and software failures. Performant means low latency response to user requests that includes scaling compute accelerators seamlessly, quickly, and keeping resource utilization optimal and finally, releasing resources not needed.  
 
-This solution describes a `stabilityai/stable-diffusion-2-1-base` [inference pipeline](oci-image-build) that implements reliable, performant and cost-effective AWS services using EC2 Inferentia instances. CodePipeline orchestrates CodeBuild DLC-based container images that are sourced in github repository and pushed to ECR. We compile the model with a [K8s batch/v1 Job](sd21-512-compile-job.yaml) that stores it in S3. Next, we deploy [K8s apps/v1 Deployment](sd21-512-serve-deploy.yaml) that pulls the model from S3 and instanciate it from images stored in ECR. Finally, we deploy [networking.k8s.io/v1 Ingress](sd21-512-serve-ingress.yaml) that builds AWS LoadBalancer and TargetGroups that auto discover the pods that power the Inference app (Gardio). 
+This solution describes a `stabilityai/stable-diffusion-2-1-base` [inference pipeline](oci-image-build) that implements reliable, performant and cost-effective AWS services using EC2 Inferentia instances. CodePipeline orchestrates CodeBuild DLC-based container images that are sourced in github repository and pushed to ECR. We compile the model with a [K8s batch/v1 Job](sd21-512-compile-job.yaml) that stores it in S3. Next, we deploy [K8s apps/v1 Deployment](sd21-512-serve-deploy.yaml) that pulls the model from S3 and instanciate it from images stored in ECR. Finally, we deploy [networking.k8s.io/v1 Ingress](sd21-512-serve-ingress.yaml) that builds AWS LoadBalancer and TargetGroups that auto discover the pods that power the Inference app (Gradio). 
 ![alt text](./sdhfserve.png)
 
 For reliability, we use Karpenter. Karpenter node-pool manages Inferentia node lifecycle. Karpenter adds Inferentia nodes to handle unschedulable pods, schedules pods on those nodes, and removes them when not needed. 
@@ -23,7 +23,7 @@ The Pod resource limits will determine which Inf2 instance will be requested by 
             aws.amazon.com/neuron: 1
 ```
 
-The neuron-device-plugin returns the list of Neuron cores/devices to kublet. Kubelet advertises the Core/Device list to K8s API server (in turn to Kube-Scheduler). Kube-Scheduler picks up the pod creation request. Kube-scheduler calls the neuron-scheduler-extn filter function with a list of nodes and pod specifications. neuron-scheduler scans the nodes and filters out nodes with non contiguous cores/devices and returns the nodes that are capable of supporting the pod specification. Kube-scheduler invokes the neuron-scheduler bind function with pod and node. It updates the pod annotation with allocated neuron contiguous core/device Ids. Then neuron-scheduler sends the bind request to kubelet of the selected node. Kubelet calls the Alloc function of the neuron-device-plugin. neuron-device-plugin queries the pod annotation for allocated core/device Ids and exports the device cores to container runtime. 
+The neuron-device-plugin returns the list of Neuron cores/devices to kubelet. Kubelet advertises the Core/Device list to K8s API server (in turn to Kube-Scheduler). Kube-Scheduler picks up the pod creation request. Kube-scheduler calls the neuron-scheduler-extn filter function with a list of nodes and pod specifications. neuron-scheduler scans the nodes and filters out nodes with non contiguous cores/devices and returns the nodes that are capable of supporting the pod specification. Kube-scheduler invokes the neuron-scheduler bind function with pod and node. It updates the pod annotation with allocated neuron contiguous core/device Ids. Then neuron-scheduler sends the bind request to kubelet of the selected node. Kubelet calls the Alloc function of the neuron-device-plugin. neuron-device-plugin queries the pod annotation for allocated core/device Ids and exports the device cores to container runtime.[To learn more about how the Neuron scheduler filters nodes see the documentation](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/containers/kubernetes-getting-started.html)
 
 The solution performance comprises of the time it takes to bring neuron devices online and prepare them for process inference requests. Neuron runtime requires the model to be compiled to Neuron Executable File Format (NEFF) so that it can be executed on the Inferentia chips. Compiling a model can weigh several gigabytes and delay container startup. Therefore, we load and extract the model files from external storage to `/model` with InitContainer and mount it to the serving pod under `/app` that uses the same `workday` volume.
 
@@ -128,7 +128,7 @@ kubectl apply -f sd21-512-serve-svc.yaml
 kubectl apply -f sd21-512-serve-ingress.yaml
 ```
 
-* The final step is to discover the Gardio app endpoint and the pods that will process the user's real-time inference requests. 
+* The final step is to discover the Gradio app endpoint and the pods that will process the user's real-time inference requests. 
 
 ```bash
 kubectl get ingress
@@ -170,7 +170,7 @@ curl sd21inf2serve-1693537287.us-west-2.elb.amazonaws.com
 {"message":"This is stabilityai/stable-diffusion-2-1-base on AWS EC2 xlainstance; try /load/{n_runs}, /serve, /health, or /ready"}
 ```
 
-Indicates the app's supported API calls. We use /serve to invoke the Gardio app for images. 
+Indicates the app's supported API calls. We use /serve to invoke the Gradio app for images. 
 ![alt text](./sdhfserve1.png)
 
 * Scale the Gardio app from 1 pod to 2 and notice Karpenter brings another `inf2.xlarge` online to power the addtional pod. 
