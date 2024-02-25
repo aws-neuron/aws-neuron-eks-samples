@@ -1,0 +1,14 @@
+FROM public.ecr.aws/docker/library/python:latest as base
+
+ARG bucket
+ENV bucket=$bucket
+
+RUN apt-get update -y --fix-missing
+RUN apt-get install -y python3-venv g++ gettext-base
+RUN python -m pip install wget
+RUN python -m pip install awscli
+
+#ENV model="stable-diffusion-2-1-base"
+#RUN echo "bucket is equal to ${bucket}"
+#RUN echo "model is equal to ${model}"
+#RUN wget https://${bucket}.s3.us-west-2.amazonaws.com/${model}.tar.gz -O /model.tar.gz
