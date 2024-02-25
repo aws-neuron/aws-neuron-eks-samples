@@ -39,7 +39,7 @@ spec:
           ls /model
       containers:
       - name: app
-        image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/stablediffusion:amd64-neuron
+        image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/stablediffusion:neuron2.19
         imagePullPolicy: Always
         volumeMounts:
           - mountPath: /dev/shm

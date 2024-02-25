@@ -190,11 +190,11 @@ def load(n_runs: int):
   return {"message": "benchmark report:"+report}
 
 @app.get("/health")
-def load():
+def healthy():
   return {"message": "healthy"}
 
 @app.get("/readiness")
-def load():
+def ready():
   return {"message": "ready"}
 
 app = gr.mount_gradio_app(app, io, path="/serve")
