@@ -9,13 +9,12 @@ The tutorial covers all steps required to prepare the EKS environment and launch
  1. [Sandbox setup](#prepjumphost)
  2. [Cluster and Tools](#clusterandtools)
  3. [Training Job preparation & Launch](#trainingjobprep)
- 4. [Monitoring Training ](#monitortraining)
+ 4. [Monitoring Training](#monitortraining)
  5. [Deleting the environment](#cleanup)
 
 # Multi-Node PyTorch Neuron Flow
 
 ![Architecture Diagram](images/eks_torchx_trn1_arch_2.png)
-
 
 ## 1. Sandbox Setup <a name="prepjumphost"></a>
 
@@ -25,7 +24,6 @@ This tutorial assumes that you will use an x86-based Linux jump host to launch a
 
 If you prefer to use your local computer instead of a jump host, please ensure that your computer is x86-based. Attempting to launch training jobs via TorchX from a non-x86 host (ex: an ARM-based M1 Mac) will lead to errors because the resulting Docker containers will be built for the wrong architecture.
 
-
 ### 1.1 Launch a Linux jump host
 
 Begin by choosing an AWS region that supports both EKS and Trainium (ex: us-east-1, us-west-2). In this tutorial we will assume the use of `us-west-2`.
@@ -34,7 +32,7 @@ In your chosen region, use the AWS Console or AWS CLI to launch an instance with
 
 * **Instance Type:** t3.large
 * **AMI:** Amazon Linux 2 AMI (HVM)
-* **Key pair name:** (choose a key pair that you have access to) 
+* **Key pair name:** (choose a key pair that you have access to)
 * **Auto-assign public IP:** Enabled
 * **Storage:** 100 GiB root volume
 
@@ -43,7 +41,7 @@ In your chosen region, use the AWS Console or AWS CLI to launch an instance with
 
 ### 1.2 Configure AWS credentials on the jump host
 
-#### Create a new IAM user in the AWS Console:
+#### Create a new IAM user in the AWS Console
 
 Refer to the [AWS IAM documentation](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_users_create.html#id_users_create_console) in order to create a new IAM user with the following parameters:
 
@@ -53,13 +51,13 @@ Refer to the [AWS IAM documentation](https://docs.aws.amazon.com/IAM/latest/User
 
 Be sure to record the ACCESS_KEY_ID and SECRET_ACCESS_KEY that were created for the new IAM user.
 
-#### Log into your jump host instance using one of the following techniques:
+#### Log into your jump host instance using one of the following techniques
 
 * Connect to your instance via the AWS Console using [EC2 Instance Connect](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/Connect-using-EC2-Instance-Connect.html)
 * SSH to your instance's public IP using the key pair you specified above.
   * Ex: `ssh -i KEYPAIR.pem ec2-user@INSTANCE_PUBLIC_IP_ADDRESS`
 
-#### Configure the AWS CLI with your IAM user's credentials:
+#### Configure the AWS CLI with your IAM user's credentials
 
 Run `aws configure`, entering the ACCESS_KEY_ID and SECRET_ACCESS_KEY you recorded above. For _Default region name_ be sure to specify the same region used to launch your jump host, ex: `us-west-2`.
 
@@ -73,20 +71,19 @@ Default output format [None]: json
 
 #### Clone this repo to your jump host
 
-```
+```sh
 sudo yum install -y git
 git clone https://github.com/aws-neuron/aws-neuron-eks-samples.git
 cd aws-neuron-eks-samples/dp_bert_hf_pretrain
 ```
 
-
 ## 2. Cluster and Tools <a name="clusterandtools"></a>
 
 ### 2.1 Install and configure eksctl, kubectl, and Docker on the jump host
 
-#### Install eksctl using the following commands:
+#### Install eksctl using the following commands
 
-```
+```sh
 curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
 sudo mv /tmp/eksctl /usr/local/bin
 ```
@@ -98,9 +95,9 @@ bash> <b>eksctl version</b>
 0.136.0
 </pre>
 
-#### Install kubectl using the following commands:
+#### Install kubectl using the following commands
 
-```
+```sh
 curl -o kubectl https://s3.us-west-2.amazonaws.com/amazon-eks/1.25.7/2023-03-17/bin/linux/amd64/kubectl
 chmod u+x kubectl
 sudo mv kubectl /usr/local/bin
@@ -115,9 +112,9 @@ Client Version: v1.25.7-eks-a59e1f0
 
 **Note:** The above commands will install kubectl version `1.25.7`. If you require a different version of kubectl, please refer to the [EKS documentation](https://docs.aws.amazon.com/eks/latest/userguide/install-kubectl.html).
 
-#### Install Docker using the following commands:
+#### Install Docker using the following commands
 
-```
+```sh
 sudo yum install -y docker jq
 sudo service docker start
 sudo usermod -aG docker ec2-user
@@ -129,7 +126,7 @@ sudo usermod -aG docker ec2-user
 
 TorchX depends on the docker-credential-ecr-login helper to authenticate with your ECR repository in order to push/pull container images. Run the following commands to install and configure the credential helper:
 
-```
+```sh
 mkdir -p ~/.docker
 cat <<EOF > ~/.docker/config.json
 {
@@ -147,13 +144,13 @@ sudo yum install -y amazon-ecr-credential-helper
 
 When working with TorchX, a container repository is required to host the container images that are used to launch and run training jobs. Run the following command to create a new Elastic Container Registry (ECR) repository called **eks_torchx_tutorial**:
 
-```
+```sh
 aws ecr create-repository --repository-name eks_torchx_tutorial
 ```
 
 Confirm that the repository was successfully created by running:
 
-```
+```sh
 aws ecr describe-repositories --repository-name eks_torchx_tutorial --query repositories[0].repositoryUri
 ```
 
@@ -173,7 +170,7 @@ bash> <b>aws ecr describe-repositories --repository-name eks_torchx_tutorial --q
 
 When provisioning an EKS cluster you need to specify 2 availability zones for the cluster. For this tutorial, it is important to choose 2 availability zones that support AWS Trainium. Run following commands to automatically choose the appropriate availability zones for the us-west-2 region:
 
-```
+```sh
 ./scripts/determine_eks_azs.sh
 ```
 
@@ -185,9 +182,9 @@ bash> <b>./scripts/determine_eks_azs.sh</b>
 Your EKS availability zones are us-west-2d and us-west-2c
 </pre>
 
-#### Create an EKS cluster manifest by running the following commands:
+#### Create an EKS cluster manifest by running the following commands
 
-```
+```sh
 ./scripts/create_eks_cluster_manifest.sh
 ```
 
@@ -199,7 +196,7 @@ Successfully wrote eks_cluster.yaml
 
 #### Examine the EKS cluster manifest
 
-```
+```sh
 cat eks_cluster.yaml
 ```
 
@@ -220,10 +217,9 @@ iam:
 availabilityZones: ["us-west-2d","us-west-2c"]
 </pre>
 
+#### Create the EKS cluster from the manifest
 
-#### Create the EKS cluster from the manifest:
-
-```
+```sh
 eksctl create cluster -f eks_cluster.yaml
 ```
 
@@ -232,21 +228,20 @@ It may take about 10-12 minutes to create the EKS cluster. Once complete, you wi
 <pre style="background: black; color: #ddd">
 bash> <b>eksctl get cluster</b>
 NAME             REGION     EKSCTL CREATED
-my-trn1-cluster	 us-west-2  True
+my-trn1-cluster  us-west-2  True
 </pre>
 
-
-####  Create EKS Trn1 Nodegroup resources
+#### Create EKS Trn1 Nodegroup resources
 
 Run create_cfn_params.sh to create the parameters required for the EKS Nodegroup resources CloudFormation template:
 
-```
+```sh
 ./scripts/create_cfn_params.sh
 ```
 
 Then create the EKS Nodegroup resources CloudFormation stack using the provided template and newly created parameters file:
 
-```
+```sh
 aws cloudformation create-stack \
 --stack-name eks-trn1-ng-stack \
 --template-body file://cfn/eks_trn1_ng_stack.yaml \
@@ -256,7 +251,7 @@ aws cloudformation create-stack \
 
 Run the following command and wait for `StackStatus` to change from **CREATE_IN_PROGRESS** to **CREATE_COMPLETE**. When you see **CREATE_COMPLETE**, press `CTRL-C` to return to the bash prompt.
 
-```
+```sh
 watch -n10 'aws cloudformation describe-stacks --stack-name eks-trn1-ng-stack|grep StackStatus'
 ```
 
@@ -269,19 +264,19 @@ Alternatively, you can monitor the status of the `eks-trn1-ng-stack` stack in th
 
 First generate the EKS Nodegroup manifest files:
 
-```
+```sh
 ./scripts/create_eks_trn1_nodegroup_manifests.sh
 ```
 
 Next, use eksctl to create the EKS Nodegroup from the manifest. This step will launch a nodegroup consisting of 2 trn1.32xlarge instances and join them to your EKS cluster. **Note:** If you would like to use trn1n.32xlarge instances (instead of trn1.32xlarge) to take advantage of the additional networking, you can substitute "trn1n_nodegroup.yaml" in the following command:
 
-```
+```sh
 eksctl create nodegroup -f trn1_nodegroup.yaml
 ```
 
 Now confirm that your Trn1 Nodegroup has Status **ACTIVE** by running the following command:
 
-```
+```sh
 eksctl get nodegroup --cluster my-trn1-cluster -o yaml
 ```
 
@@ -310,10 +305,12 @@ bash> <b>eksctl get nodegroup --cluster my-trn1-cluster -o yaml</b>
 
 In order to use Trn1 instances with EKS, a few Neuron and EFA plugins are required. Run the following `kubectl` commands to install the Neuron, Neuron RBAC, and EFA plugins on your new EKS cluster:
 
-```
+```sh
 kubectl apply -f https://awsdocs-neuron.readthedocs-hosted.com/en/latest/_downloads/f57f27621e52b305dba7d624c477977a/k8s-neuron-device-plugin.yml
 kubectl apply -f https://awsdocs-neuron.readthedocs-hosted.com/en/latest/_downloads/46fb1da6e5e79c3310ebc0cbd6ad2353/k8s-neuron-device-plugin-rbac.yml
-kubectl apply -f ./manifest/efa-k8s-device-plugin.yml
+
+helm repo add eks https://aws.github.io/eks-charts
+helm install aws-efa-k8s-device-plugin --namespace kube-system eks/aws-efa-k8s-device-plugin
 ```
 
 Next, run `kubectl get pods -n kube-system` and verify that the EFA and Neuron daemonsets are running:
@@ -335,9 +332,9 @@ kube-proxy-7rxhq                            1/1     Running   0          14h
 
 **Note:** If the aws-efa-k8s-device-plugin-daemonset pods indicate an error status of `CreateContainerConfigError`, please delete and re-apply the daemonset using the following commands and then re-check the daemonset status as indicated above:
 
-```
-kubectl delete -f ./manifest/efa-k8s-device-plugin.yml
-kubectl apply -f ./manifest/efa-k8s-device-plugin.yml
+```sh
+helm uninstall aws-efa-k8s-device-plugin --namespace kube-system eks/aws-efa-k8s-device-plugin
+helm install aws-efa-k8s-device-plugin --namespace kube-system eks/aws-efa-k8s-device-plugin
 ```
 
 <br/>
@@ -345,15 +342,15 @@ kubectl apply -f ./manifest/efa-k8s-device-plugin.yml
 
 #### Install and configure TorchX and Volcano <a name="installtorchxandvolcano"></a>
 
-[TorchX](https://pytorch.org/torchx/main/) is a universal launcher for PyTorch jobs, and supports a variety of schedulers including AWS Batch, Docker, Kubernetes, Slurm, Ray, and more. 
+[TorchX](https://pytorch.org/torchx/main/) is a universal launcher for PyTorch jobs, and supports a variety of schedulers including AWS Batch, Docker, Kubernetes, Slurm, Ray, and more.
 
 This tutorial makes use of the Kubernetes scheduler, which depends on the open-source [Volcano batch system](https://github.com/volcano-sh/volcano).
 
 In this section, you will install Volcano and then configure a job queue.
 
-#### Install Volcano and etcd by running the following commands on the jump host:
+#### Install Volcano and etcd by running the following commands on the jump host
 
-```
+```sh
 kubectl apply -f https://raw.githubusercontent.com/pytorch/torchx/main/resources/etcd.yaml
 kubectl apply -f https://raw.githubusercontent.com/volcano-sh/volcano/master/installer/volcano-development.yaml
 ```
@@ -362,7 +359,7 @@ kubectl apply -f https://raw.githubusercontent.com/volcano-sh/volcano/master/ins
 
 In order for TorchX to use Volcano at least one job queue must be defined in Volcano. Run the following commands to create a simple test queue:
 
-```
+```sh
 ./scripts/create_volcano_test_queue.sh
 ```
 
@@ -378,7 +375,7 @@ If you receive an error stating "no endpoints available for service volcano-admi
 
 Use pip to install TorchX on the jump host:
 
-```
+```sh
 pip3 install torchx[kubernetes]
 ```
 
@@ -387,7 +384,7 @@ pip3 install torchx[kubernetes]
 
 #### Install and configure FSx for Lustre CSI <a name="installfsxcsi"></a>
 
-In this tutorial, TorchX is used to launch a DataParallel BERT phase1 pretraining job using 64 workers across 2 trn1.32xlarge (or trn1n.32xlarge) instances (with 32 workers per instance). 
+In this tutorial, TorchX is used to launch a DataParallel BERT phase1 pretraining job using 64 workers across 2 trn1.32xlarge (or trn1n.32xlarge) instances (with 32 workers per instance).
 
 BERT phase1 pretraining uses a 50+ GB WikiCorpus dataset as the training dataset. For large datasets such as this, it is inefficient to include the dataset inside the training container image or to download the dataset at the beginning of each training job. A more efficient approach is to use a Kubernetes persistent shared storage volume to host the dataset.
 
@@ -397,13 +394,13 @@ The following steps show how to host the WikiCorpus dataset on a shared volume p
 
 First run the following command to create the appropriate FSX CSI service account on the EKS cluster:
 
-```
+```sh
 ./scripts/create_fsx_serviceaccount.sh
 ```
 
 Next, run the following commands to install the FSx for Lustre CSI driver on the EKS cluster:
 
-```
+```sh
 kubectl apply -k "github.com/kubernetes-sigs/aws-fsx-csi-driver/deploy/kubernetes/overlays/stable/?ref=master"
 ```
 
@@ -416,26 +413,25 @@ efs.csi.aws.com   false            false            false             <unset>   
 <b>fsx.csi.aws.com   false            false            false             <unset>         false               Persistent   16s</b>
 </pre>
 
+#### Create and apply the storage class manifest for Lustre storage
 
-#### Create and apply the storage class manifest for Lustre storage:
-
-```
+```sh
 ./scripts/create_storageclass_manifest.sh
 kubectl apply -f storageclass.yaml
 ```
 
-#### Create and apply the persistent volume claim (PVC) manifest for Lustre storage:
+#### Create and apply the persistent volume claim (PVC) manifest for Lustre storage
 
-```
+```sh
 ./scripts/create_lustre_pv_claim.sh
 kubectl apply -f claim.yaml
 ```
 
-#### Confirm that the persistent volume claim is 'bound' to the EKS cluster:
+#### Confirm that the persistent volume claim is 'bound' to the EKS cluster
 
 After you apply the above persistent volume claim manifest, an FSx for Lustre filesystem will automatically be provisioned for you. This process will take 5-10 minutes. To monitor the provisioning process, run the following command and wait for the Status field to change from "Pending" to "Bound". When the Status shows as "Bound", you can press `CTRL-C` to return to the bash prompt.
 
-```
+```sh
 watch -n10 'kubectl get pvc'
 ```
 
@@ -455,7 +451,7 @@ fsx-claim   Bound    pvc-abcdabcd   1200Gi     RWX            fsx-sc         6m2
 
 Run the following commands on the jump host to build the pretraining and command shell container images and push them into your ECR repository:
 
-```
+```sh
 export DOCKER_BUILDKIT=1
 ECR_REPO=$(aws ecr describe-repositories --repository-name eks_torchx_tutorial \
     --query repositories[0].repositoryUri --output text)
@@ -470,17 +466,18 @@ docker push $ECR_REPO:cmd_shell
 
 ### 3.2 Copy BERT pretraining dataset to the Lustre-hosted persistent volume <a name="copybertdata"></a>
 
-#### Create and apply a manifest for a command shell pod that can be used to access the persistent volume:
+#### Create and apply a manifest for a command shell pod that can be used to access the persistent volume
 
-```
+```sh
 ./scripts/create_cmd_shell_pod_manifest.sh
 kubectl apply -f cmd_shell_pod.yaml
 ```
 
-#### Wait for command shell pod to go into Running state:
+#### Wait for command shell pod to go into Running state
+
 Periodically run `kubectl get pods` until you see the cmd-shell pod show as `Running`:
 
-```
+```sh
 kubectl get pods
 ```
 
@@ -490,19 +487,19 @@ NAME          READY   STATUS    RESTARTS   AGE
 cmd-shell     1/1     <b>Running</b>   0          2m55s
 </pre>
 
-#### Open an interactive bash prompt on the command shell pod:
+#### Open an interactive bash prompt on the command shell pod
 
 When the command shell pod is running, run the following command to open a bash prompt on the pod:
 
-```
+```sh
 kubectl exec -it cmd-shell -- /bin/bash
 ```
 
-#### Copy and extract the WikiCorpus dataset to the persistent volume:
+#### Copy and extract the WikiCorpus dataset to the persistent volume
 
 Run the following commands from within the bash prompt on the command shell pod:
 
-```
+```sh
 cd /data
 aws s3 cp s3://neuron-s3/training_datasets/bert_pretrain_wikicorpus_tokenized_hdf5/bert_pretrain_wikicorpus_tokenized_hdf5_seqlen128.tar . --no-sign-request
 tar xvf bert_pretrain_wikicorpus_tokenized_hdf5_seqlen128.tar
@@ -512,7 +509,7 @@ When the above commands have completed, you can exit the command shell pod by ty
 
 Please delete the cmd-shell app by running:
 
-```
+```sh
 kubectl delete pod cmd-shell
 ```
 
@@ -525,7 +522,7 @@ PyTorch Neuron comes with a tool called [neuron_parallel_compile](https://awsdoc
 
 To precompile the BERT graphs, run the following commands:
 
-```
+```sh
 ECR_REPO=$(aws ecr describe-repositories --repository-name eks_torchx_tutorial \
     --query repositories[0].repositoryUri --output text)
 
@@ -579,13 +576,13 @@ bertcompile-hpzwjhg4zlq25c-role1-1-0   1/1     Running   0          5m52s
 
 Next, choose one of your bertcompile- pods and run the following command to monitor the output of the precompilation job:
 
-```
+```sh
 kubectl logs -f YOUR_BERTCOMPILE_POD_NAME
 ```
 
 The precompilation job will run for ~15 minutes. Once complete, you will see the following in the output:
 
-```
+```text
 2022-12-21 00:07:10.000925: INFO ||PARALLEL_COMPILE||: Total graphs: 6
 2022-12-21 00:07:10.000925: INFO ||PARALLEL_COMPILE||: Total successful compilations: 6
 2022-12-21 00:07:10.000925: INFO ||PARALLEL_COMPILE||: Total failed compilations: 0
@@ -598,7 +595,7 @@ The precompilation job will run for ~15 minutes. Once complete, you will see the
 
 Run the following commands to launch the 64-worker BERT pretraining job on the EKS cluster:
 
-```
+```sh
 ECR_REPO=$(aws ecr describe-repositories --repository-name eks_torchx_tutorial \
     --query repositories[0].repositoryUri --output text)
 
@@ -628,7 +625,7 @@ torchx run \
 
 Run the following command to check the status of the recently submitted training job:
 
-```
+```sh
 kubectl get vcjob
 ```
 
@@ -643,7 +640,7 @@ berttrain-shpw6kn367csdc     Running     2              2          19s
 
 When the status of your "berttrain-" job shows as `Running`, use the following command to identify the pods associated with the job:
 
-```
+```sh
 kubectl get pods
 ```
 
@@ -660,7 +657,7 @@ berttrain-shpw6kn367csdc-role1-1-0     1/1     Running     0          86s
 
 To view the training script output, you first need to know which of the running pods represents the rank0 worker in the distributed training job. For the BERT pretraining script, only the rank0 worker outputs training metrics. During training job initialization, rank is randomly assigned among the participants, and is not directly related to the pod name. You can determine the rank0 worker by running the following script:
 
-```
+```sh
 ./scripts/find_rank0_pod.sh
 ```
 
@@ -671,7 +668,7 @@ YOUR_POD_NAME is your rank0 worker pod.
 
 Once you have determined the name of your rank0 worker pod, you can substitute the pod name into the following command to view the training script output. If you do not see training metrics in the logs (as shown below), please wait 1-2 minutes and re-run the command.
 
-```
+```sh
 kubectl logs YOUR_POD_NAME|tail -3
 ```
 
@@ -684,7 +681,7 @@ bash> <b>kubectl logs YOUR_POD_NAME|tail -3</b>
 
 To continously view the training script output (similar to the `tail -f` command in Linux), you can use the following command. The command can be terminated using CTRL-C.
 
-```
+```sh
 kubectl logs -f YOUR_POD_NAME
 ```
 
@@ -695,7 +692,7 @@ kubectl logs -f YOUR_POD_NAME
 
 The BERT training job also stores training metrics on the FSx for Lustre shared storage volume. To view these metrics in Tensorboard, you can launch a Tensorboard deployment within the EKS environment using the following script:
 
-```
+```sh
 ./scripts/deploy_tensorboard_pod.sh
 ```
 
@@ -714,27 +711,25 @@ The Neuron SDK provides [Neuron tools](https://awsdocs-neuron.readthedocs-hosted
 
 To view `neuron-top` statistics for one of your nodes, begin by choosing one of your running BERT training pods:
 
-```
+```sh
 kubectl get pods|grep Running|grep bert
 ```
 
 Substitute the name of one of your running pods into the following command to launch a bash prompt within the running pod:
 
-```
+```sh
 kubectl exec -it YOUR_POD_NAME -- /bin/bash
 ```
 
 At the bash prompt, run `neuron-top`:
 
-```
+```sh
 neuron-top
 ```
 
 It should look something like the below:
 
-
 ![Neuron-top](images/neuron-top.png)
-
 
 When you are finished exploring `neuron-top`, press `q` to quit. At the pod's bash prompt, press `CTRL-D` to return to your jump host.
 
@@ -745,7 +740,7 @@ When you are finished exploring `neuron-top`, press `q` to quit. At the pod's ba
 
 When you are finished with the tutorial, run the following commands on the jump host to remove the EKS cluster and associated resources:
 
-```
+```sh
 # Delete Tensorboard deployment
 kubectl delete -f tensorboard_manifest.yaml
 
@@ -771,4 +766,3 @@ aws ecr delete-repository --force --repository-name eks_torchx_tutorial
 ```
 
 Lastly, terminate your jump host instance and delete the `eks_tutorial` IAM user via the AWS Console.
-
