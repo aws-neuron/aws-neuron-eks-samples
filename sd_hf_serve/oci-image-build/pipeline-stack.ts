@@ -25,6 +25,7 @@ export class PipelineStack extends Stack {
   const GITHUB_USER = new CfnParameter(this,"GITHUBUSER",{type:"String"});
   const GITHUB_REPO = new CfnParameter(this,"GITHUBREPO",{type:"String"});
   const GITHUB_BRANCH = new CfnParameter(this,"GITHUBBRANCH",{type:"String"});
+  const NEURON_DLC_IMAGE = new CfnParameter(this,"NEURONDLCIMAGE",{type:"String"});
   /* uncomment when you test the stack and dont want to manually delete the ecr registry 
   const base_registry = new ecr.Repository(this,`base_repo`,{
     repositoryName:BASE_REPO.valueAsString,
@@ -73,7 +74,7 @@ export class PipelineStack extends Stack {
         version: "0.2",
         env: {
           'exported-variables': [
-            'AWS_ACCOUNT_ID','AWS_REGION','BASE_REPO','IMAGE_AMD_XLA_TAG','BASE_IMAGE_AMD_XLA_TAG'
+            'AWS_ACCOUNT_ID','AWS_REGION','BASE_REPO','IMAGE_AMD_XLA_TAG','BASE_IMAGE_AMD_XLA_TAG','NEURON_DLC_IMAGE'
           ],
         },
         phases: {
@@ -86,6 +87,7 @@ export class PipelineStack extends Stack {
               `export BASE_IMAGE_TAG="${BASE_IMAGE_AMD_XLA_TAG.valueAsString}"`,
               `export BUCKET="${BUCKET.valueAsString}"`,
               `export MODEL_FILE="${MODEL_FILE.valueAsString}"`,
+              `export NEURON_DLC_IMAGE="${NEURON_DLC_IMAGE.valueAsString}"`,
               `cd sd_hf_serve/app`,
               `chmod +x ./build.sh && ./build.sh`
             ],
