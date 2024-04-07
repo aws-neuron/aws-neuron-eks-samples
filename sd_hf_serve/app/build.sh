@@ -2,7 +2,9 @@
 docker logout
 aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin $NEURON_DLC_IMAGE 
 docker pull $NEURON_DLC_IMAGE
-dlc_image_id=$(docker images | grep $NEURON_DLC_IMAGE | awk '{print $3}')
+dlc_ecr=$(echo $NEURON_DLC_IMAGE| awk -F\: '{print $1}')
+dlc_image_tag=$(echo $NEURON_DLC_IMAGE| awk -F\: '{print $2}')
+dlc_image_id=$(docker images | grep $dlc_ecr | grep $dlc_image_tag | awk '{print $3}')
 docker images
 docker logout
 
