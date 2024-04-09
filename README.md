@@ -15,7 +15,9 @@ Samples are organized by use case below:
 
 ## Inference
 
-Coming soon
+| Link | Description | Instance Type |
+| --- | --- | --- |
+| [SD inference](sd_hf_serve) | SD Inference workflow for creating an inference endpoint forwarded by ALB LoadBalancer powered by Karpenter's NodePool | Inf2 |
 
 ## Getting Help
 

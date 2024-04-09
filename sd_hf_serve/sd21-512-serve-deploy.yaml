@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: sd21-inf2-serve
+  name: sd21-inf2-serve
+spec:
+  selector:
+    matchLabels:
+      app: sd21-inf2-serve
+  template:
+    metadata:
+      labels:
+        app: sd21-inf2-serve
+    spec:
+      nodeSelector:
+        karpenter.sh/nodepool: inf2
+      serviceAccountName: sd21-sa
+      schedulerName: my-scheduler
+      volumes:
+      - name: dshm
+        emptyDir:
+          medium: Memory
+      initContainers:
+      - name: pull-model-tar
+        image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/stablediffusion:amd64-neuron-assets
+        imagePullPolicy: Always
+        volumeMounts:
+        - name: workdir
+          mountPath: /model
+        command:
+        - /bin/bash
+        - "-exc"
+        - |
+          set -x
+          aws s3 cp s3://sdinfer/stable-diffusion-2-1-base.tar.gz /model/model.tar.gz
+          cd /model
+          tar -xzf /model/model.tar.gz
+          ls /model
+      containers:
+      - name: app
+        image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/stablediffusion:neuron2.19
+        imagePullPolicy: Always
+        volumeMounts:
+          - mountPath: /dev/shm
+            name: dshm
+          - mountPath: /app
+            name: workdir
+        command: ["/start.sh"]
+        args: ["run"]
+        resources:
+          limits:
+            aws.amazon.com/neuron: 2
+        env:
+        - name: DEVICE
+          value: "xla"
+        - name: BUCKET
+          value: "sdinfer"
+        - name: MODEL_ID
+          value: "stabilityai/stable-diffusion-2-1-base"
+        - name: COMPILER_WORKDIR_ROOT
+          value: "/app/sd2_compile_dir_512"
+        - name: MODEL_FILE
+          value: "stable-diffusion-2-1-base"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        ports:
+          - containerPort: 8000
+            protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readiness
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+      volumes:
+      - name: workdir
+        emptyDir: {}
+      - name: dshm
+        emptyDir:
+          medium: Memory
