@@ -502,6 +502,8 @@ kubectl exec -it cmd-shell -- /bin/bash
 
 Run the following commands from within the bash prompt on the command shell pod:
 
+NOTE : the bucket is in us-east-1 so you will need to add `--region us-east-1` to the `aws s3 cp` command if your cluster is not in us-east-1.
+
 ```
 cd /data
 aws s3 cp s3://neuron-s3/training_datasets/bert_pretrain_wikicorpus_tokenized_hdf5/bert_pretrain_wikicorpus_tokenized_hdf5_seqlen128.tar . --no-sign-request
