@@ -1,0 +1,34 @@
+# ----------------------------------------------------------------------------
+# RayJob: 2-llama3-finetune-trn1-rayjob-create-data
+#
+# Description:
+# This RayJob is responsible for generating fine-tuning test data required for
+# the Llama3.1 8B model training. It sources data from the specified dataset, processes
+# it, and prepares it for use in subsequent training stages. The job runs a Python
+# script (`download_llama.py`) that performs these data preparation steps.
+
+# Usage:
+# Apply this configuration to your Kubernetes cluster using `kubectl apply -f 2-llama3-finetune-trn1-rayjob-create-data.yaml`.
+# Ensure that the Ray cluster (`kuberay-trn1`) is running and accessible in the specified namespace.
+# ----------------------------------------------------------------------------
+
+apiVersion: ray.io/v1
+kind: RayJob
+metadata:
+  name: 2-llama3-finetune-trn1-rayjob-create-data
+  namespace: default
+spec:
+  submissionMode: K8sJobMode
+  entrypoint: "mkdir -p /shared/llama-3.1 && python3 download_llama.py && mkdir -p /shared/Meta-Llama-3.1-8B/pretrained_weight && python3 convert_checkpoints.py --tp_size 8 --convert_from_full_state --config ./config.json --input_dir /shared/llama3.1-8b-hf-pretrained.pt --output_dir /shared/Meta-Llama-3.1-8B/pretrained_weight/"
+  runtimeEnvYAML: |
+    working_dir: /llama3_finetune
+    env_vars:
+      PYTHONUNBUFFERED: '0'
+    resources:
+      requests:
+        cpu: "6"
+        memory: "30Gi"
+  clusterSelector:
+    ray.io/cluster: kuberay-trn1
+    rayClusterNamespace: default  # Replace with the namespace where your RayCluster is deployed
+  ttlSecondsAfterFinished: 60  # Time to live for the pod after completion (in seconds)

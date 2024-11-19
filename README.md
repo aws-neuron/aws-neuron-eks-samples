@@ -12,6 +12,7 @@ Samples are organized by use case below:
 | --- | --- | --- |
 | [BERT pretraining](dp_bert_hf_pretrain) | End-end workflow for creating an EKS cluster with 2 trn1.32xl nodes and running BERT phase1 pretraining (64-worker DataParallel)| Trn1 |
 | [MLP training](mlp_train) | Introductory workflow for creating an EKS cluster with 1 node and running a simple MLP training job| Trn1 |
+| [Llama 3.1 8B finetuning with Ray+PTL](llama3.1_8B_finetune_ray_ptl_neuron) | End-end workflow for creating a Ray cluster with 2 trn1.32xlarge nodes on EKS and running Llama 3.1 8B finetuning| Trn1 |
 
 ## Inference
 
