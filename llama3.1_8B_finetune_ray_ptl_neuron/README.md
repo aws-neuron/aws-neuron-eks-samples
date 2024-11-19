@@ -2,7 +2,7 @@
 
 ## Overview <a name="overview2"></a>
 
-This tutorial shows how to launch a Ray + PTL +  Neuron training job on multiple Trn1 nodes within an Amazon Elastic Kubernetes Service (EKS) cluster. In this example, the Llama3.1 8B model will undergo fine-tuning using the opensource dataset: Hugging face databricks/databricks-dolly-15k. Ray will be used to launch the job on 2 trn1.32xlarge (or trn1n.32xlarge) instances, with 32 cores per instance.
+This tutorial shows how to launch a Ray + PTL +  Neuron training job on multiple Trn1 nodes within an Amazon Elastic Kubernetes Service (EKS) cluster. In this example, the [Llama3.1 8B](https://huggingface.co/NousResearch/Meta-Llama-3.1-8B) model will undergo fine-tuning using the opensource dataset: [Hugging face databricks/databricks-dolly-15k](https://huggingface.co/datasets/databricks/databricks-dolly-15k). Ray will be used to launch the job on 2 trn1.32xlarge (or trn1n.32xlarge) instances, with 32 cores per instance.
 
 ### What are Ray, PTL and Neuron?
 
@@ -10,32 +10,35 @@ This tutorial shows how to launch a Ray + PTL +  Neuron training job on multiple
 
 [Ray](https://docs.ray.io/en/latest/ray-core/examples/overview.html) enhances ML workflows by seamlessly scaling fine-tuning and inference across distributed clusters, transforming single-node code into high-performance, multi-node operations with minimal effort.
 
-[AWS Neuron](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/) is an SDK with a compiler, runtime, and profiling tools that unlocks high-performance and cost-effective deep learning (DL) acceleration. It supports high-performance training on AWS Trainium instances. For model deployment, it supports high-performance and low-latency inference on AWS Inferentia
+[AWS Neuron](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/) is an SDK with a compiler, runtime, and profiling tools that unlocks high-performance and cost-effective deep learning (DL) acceleration. It supports high-performance training on AWS Trainium instances. For model deployment, it supports high-performance and low-latency inference on AWS Inferentia.
 
 ### Combining Ray + PTL + Neuron:
 The integration of Ray, PyTorch Lightning (PTL), and AWS Neuron combines PTL's intuitive model development API, Ray Train's robust distributed computing capabilities for seamless scaling across multiple nodes, and AWS Neuron's hardware optimization for Trainium, significantly simplifying the setup and management of distributed training environments for large-scale AI projects, particularly those involving computationally intensive tasks like large language models.
 
 The tutorial covers all steps required to prepare the EKS environment and launch the training job:
 
- 1. [Setup EKS Environment](#setupeksenv)
- 2. [Create ECR repo and upload docker image](#createdockerimage)
- 3. [Creating Ray Cluster](#creatingraycluster)
- 4. [Preparing Data](#preparingdata)
- 5. [Fine-tuning Model](#finetuningmodel)
+ 1. [Sandbox Environment](#prepjumphost)
+ 2. [Setup EKS cluster and tools](#setupeksclusterandtools)
+ 3. [Create ECR repo and upload docker image](#createdockerimage)
+ 4. [Creating Ray Cluster](#creatingraycluster)
+ 5. [Preparing Data](#preparingdata)
  6. [Monitoring Jobs](#viewingraydashboard)
- 7. [Deleting the environment](#cleanup)
+ 7. [Fine-tuning Model](#finetuningmodel)
+ 8. [Deleting the environment](#cleanup)
+ 9. [Troubleshooting](#troubleshooting)
 
 # Multi-Node Ray + PTL + Neuron Flow
 
 ![Architecture Diagram](images/rayptlneuron-architecture.png)
 
-## 1. Setup EKS Environment <a name="setupeksenv"></a>
+## 1. Sandbox Environment <a name="prepjumphost"></a>
 
 ### 1.1 Launch a Linux jump host
 
-Begin by choosing an AWS region that supports both EKS and Trainium (ex: us-east-1, us-west-2, us-east-2). 
+<b>Supported Regions:</b>
+Begin by choosing an AWS region that supports both EKS and Trainium (ex: us-west-2 / us-east-1 / us-east-2). 
 
-In your chosen region, use the AWS Console or AWS CLI to launch an instance with the following configuration:
+In your chosen region (for ex: us-east-2), use the AWS Console or AWS CLI to launch an instance with the following configuration:
 
 * **Instance Type:** m5.large
 * **AMI:** Amazon Linux 2023 AMI (HVM)
@@ -49,7 +52,7 @@ In your chosen region, use the AWS Console or AWS CLI to launch an instance with
 
 Refer to the [AWS IAM documentation](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_users_create.html#id_users_create_console) in order to create a new IAM user with the following parameters:
 
-* **User name:** eks_tutorial
+* **User name:** `eks_tutorial`
 * **Select AWS credential type:** enable `Access key - Programmatic access`
 * **Permissions:** choose _Attach existing policies directly_ and then select `AdministratorAccess`
 
@@ -63,36 +66,93 @@ Be sure to record the ACCESS_KEY_ID and SECRET_ACCESS_KEY that were created for 
 
 #### Configure the AWS CLI with your IAM user's credentials:
 
-Run `aws configure`, entering the ACCESS_KEY_ID and SECRET_ACCESS_KEY you recorded above. For _Default region name_ be sure to specify the same region used to launch your jump host, ex: `us-west-2`.
+Run `aws configure`, entering the ACCESS_KEY_ID and SECRET_ACCESS_KEY you recorded above. For _Default region name_ be sure to specify the same region used to launch your jump host, ex: `us-east-2`.
 
 <pre style="background: black; color: #ddd">
 bash> <b>aws configure</b>
 AWS Access Key ID [None]:  ACCESS_KEY_ID
 AWS Secret Access Key [None]: SECRET_ACCESS_KEY
-Default region name [None]: us-west-2
-Default output format [None]: json
+Default region name [None]: us-east-2
+Default output format [None]: 
 </pre>
 
-### 1.3 Set up the EKS environment
+## 2. Setup EKS cluster and tools <a name="setupeksclusterandtools"></a>
 
-Supported US Regions: us-west-2 / us-east-1 / us-east-2
+### 2.1 Setup kubectl, docker, terraform on your jump host
 
-Setup the EKS cluster following the instructions under `Deploying the Solution` section in [data-on-eks documentation](https://awslabs.github.io/data-on-eks/docs/gen-ai/training/Neuron/RayTrain-Llama2#1-deploying-the-solution). 
+Before we begin, ensure you have all the prerequisites in place to make the deployment process smooth and hassle-free. Ensure that you have installed the following tools on your jump host.
 
-### 1.4 Setup eksctl, kubectl on your jump host
+* [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html)
+* [kubectl](https://kubernetes.io/docs/tasks/tools/)
+* [terraform](https://learn.hashicorp.com/tutorials/terraform/install-cli)
+* [docker](https://www.docker.com/)
 
-Once the EKS Cluster is setup, setup eksctl and kubectl on your jump host using the [steps in documentation.](https://docs.aws.amazon.com/eks/latest/userguide/install-kubectl.html)
+<b>Automation for Pre-requisities:</b><br/>
+To install all the pre-reqs above on the jump host, you can run this [script](https://github.com/awslabs/data-on-eks/blob/main/ai-ml/trainium-inferentia/examples/llama2/install-pre-requsites-for-ec2.sh) which is compatible with Amazon Linux 2023.
 
-### 1.5 Verify if the Neuron Device Plugin is running
+### 2.2 Clone the Data on EKS repository
+```
+cd ~
+git clone https://github.com/awslabs/data-on-eks.git
+```
 
-Use the following kubectl command from your jump host / local
+### 2.3 Setup EKS Cluster
+
+Navigate to the trainium-inferentia directory:
+
+```
+cd data-on-eks/ai-ml/trainium-inferentia
+```
+
+Let's run the below export commands to set environment variables.
+
+```
+# Enable FSx for Lustre, which will mount fine-tuning data to all pods across multiple nodes
+export TF_VAR_enable_fsx_for_lustre=true
+
+# Set the region according to your requirements. Check Trn1 instance availability in the specified region.
+export TF_VAR_region=us-east-2
+
+# Enable Volcano custom scheduler with KubeRay Operator
+export TF_VAR_enable_volcano=true
+
+# Note: This configuration will create two new Trn1 32xl instances. Ensure you validate the associated costs before proceeding. You can change the number of instances here.
+export TF_VAR_trn1_32xl_min_size=2
+export TF_VAR_trn1_32xl_desired_size=2
+```
+
+Run the installation script to provision an EKS cluster with all the add-ons needed for the solution.
+
+```
+./install.sh
+```
+
+### 2.4 Verify the resources
+Verify the Amazon EKS Cluster:
+```
+aws eks --region us-east-2 describe-cluster --name trainium-inferentia
+```
+
+```
+# Creates k8s config file to authenticate with EKS
+aws eks --region us-east-2 update-kubeconfig --name trainium-inferentia
+
+kubectl get nodes # Output shows the EKS Managed Node group nodes
+```
+
+### 2.5 Verify if the Neuron Device Plugin is running
+
+Use the following kubectl command:
+
 <pre style="background: black; color: #ddd">
 kubectl get ds neuron-device-plugin --namespace kube-system
 NAME                           DESIRED CURRENT READY UP-TO-DATE AVAILABLE NODE SELECTOR AGE
 neuron-device-plugin-daemonset 2         2      2        2          2      <none> 17d
 </pre>
 
-### 1.6 Verify that the node has allocatable Neuron cores and devices
+### 2.6 Verify that the EKS cluster has allocatable Neuron cores and devices
+
+Use the following kubectl command:
 
 <pre style="background: black; color: #ddd">
 kubectl get nodes "-o=custom-columns=NAME:.metadata.name,NeuronCore:.status.allocatable.aws\.amazon\.com/neuroncore"
@@ -101,22 +161,11 @@ ip-192-168-65-41.us-west-2.compute.internal 32
 ip-192-168-87-81.us-west-2.compute.internal 32
 </pre>
 
-### 1.7 Setup docker on your jump host
-Setup docker on your jump host using the steps below:
+## 3. Create ECR repo and upload docker image to ECR <a name="createdockerimage"></a>
 
-<pre style="background: black; color: #ddd">
-sudo yum update -y
-sudo yum install -y docker
-sudo systemctl start docker
-sudo usermod -aG docker ec2-user
-sudo chmod 666 /var/run/docker.sock
-docker ps
-docker --version
-</pre>
+### 3.1 Clone this repo
 
-## 2. Create ECR repo and upload docker image to ECR <a name="createdockerimage"></a>
-
-### 2.1 Clone this repo to your jump host / local host
+On your jump host:
 
 <pre style="background: black; color: #ddd">
 sudo yum install -y git
@@ -124,38 +173,45 @@ git clone https://github.com/aws-neuron/aws-neuron-eks-samples.git
 cd aws-neuron-eks-samples/llama3.1_8B_finetune_ray_ptl_neuron
 </pre>
 
-### 2.2 Execute the script
+### 3.2 Execute the script
 
-The script `0-kuberay-trn1-llama3-pretrain-build-image.sh` checks if the ECR repo `kuberay_trn1_llama3.1_pytorch2` exists in the AWS Account and creates it if it does not exist. It also builds the docker image and uploads the image to this repo. 
+The script `0-kuberay-trn1-llama3-finetune-build-image.sh` checks if the ECR repo `kuberay_trn1_llama3.1_pytorch2` exists in the AWS Account and creates it if it does not exist. <br/><br/>
+This script also builds the docker image and uploads the image to this repo. 
 
 <pre style="background: black; color: #ddd">
-bash> chmod +x 0-kuberay-trn1-llama3-pretrain-build-image.sh
-bash> ./0-kuberay-trn1-llama3-pretrain-build-image.sh
-bash> Enter the appropriate AWS region: For example: us-west-2
+bash> chmod +x 0-kuberay-trn1-llama3-finetune-build-image.sh
+bash> ./0-kuberay-trn1-llama3-finetune-build-image.sh
+bash> Enter the appropriate AWS region: For example: us-east-2
 </pre>
 
 If you have required credentials, the docker image should be successfully created and uploaded to Amazon ECR in the repository in the specific AWS region.
 
-Verify if the repository `kuberay_trn1_llama3.1_pytorch2` is created successfully by heading to Amazon ECR service in AWS Console
+Verify if the repository `kuberay_trn1_llama3.1_pytorch2` is created successfully by heading to Amazon ECR service in AWS Console.
 
-## 3. Creating Ray cluster <a name="creatingraycluster"></a>
+## 4. Creating Ray cluster <a name="creatingraycluster"></a>
 
 The script `1-llama3-finetune-trn1-create-raycluster.yaml` creates Ray cluster with a head pod and worker pods.
 
-Use the command below to create ray cluster:
+Update the `<AWS_ACCOUNT_ID>` and `<REGION>` fields in the `1-llama3-finetune-trn1-create-raycluster.yaml` file using commands below (to reflect the correct ECR image ARN created above):
+
 <pre style="background: black; color: #ddd">
-bash> export AWS_ACCOUNT_ID=<account_id>
-bash> export REGION=<region>
-bash> sed -i "s/<AWS_ACCOUNT_ID>/$AWS_ACCOUNT_ID/g" 1-llama3-finetune-trn1-create-raycluster.yaml
-bash> sed -i "s/<REGION>/$REGION/g" 1-llama3-finetune-trn1-create-raycluster.yaml
-bash> kubectl apply -f 1-llama3-finetune-trn1-create-raycluster.yaml
+bash> export AWS_ACCOUNT_ID=&lt;enter_your_aws_account_id&gt; # for ex: 111222333444
+bash> export REGION=&lt;enter_your_aws_region&gt; # for ex: us-east-2
+bash> sed -i "s/&lt;AWS_ACCOUNT_ID&gt;/$AWS_ACCOUNT_ID/g" 1-llama3-finetune-trn1-create-raycluster.yaml
+bash> sed -i "s/&lt;REGION&gt;/$REGION/g" 1-llama3-finetune-trn1-create-raycluster.yaml
+</pre>
+
+Use the command below to create Ray cluster:
+<pre style="background: black; color: #ddd">
+kubectl apply -f 1-llama3-finetune-trn1-create-raycluster.yaml
+kubectl get pods # Ensure all head and worker pods are in Running state
 </pre>
 
 The Ray cluster contains 1 head pod and 2 worker pods. Worker pods are deployed on the 2 Trainium instances (trn1.32xlarge). 
 
-## 4. Preparing data <a name="preparingdata"></a>
+## 5. Preparing data <a name="preparingdata"></a>
 
-Use the command below to submit a Ray job for downloading the [databricks/databricks-dolly-15k](https://huggingface.co/datasets/databricks/databricks-dolly-15k) dataset and the Llama3.1 8B model:
+Use the command below to submit a Ray job for downloading the [databricks/databricks-dolly-15k](https://huggingface.co/datasets/databricks/databricks-dolly-15k) dataset and the [Llama3.1 8B](https://huggingface.co/NousResearch/Meta-Llama-3.1-8B) model:
 
 <pre style="background: black; color: #ddd">
 kubectl apply -f 2-llama3-finetune-trn1-rayjob-create-data.yaml
@@ -173,19 +229,18 @@ kuberay-trn1-worker-workergroup-lwc2f             1/1     Running     0         
 kuberay-trn1-worker-workergroup-zsm2z             1/1     Running     0          14m
 </pre>
 
-## 5. Monitoring jobs via Ray Dashboard <a name="viewingraydashboard"></a>
+## 6. Monitoring jobs via Ray Dashboard <a name="viewingraydashboard"></a>
 
 To view the Ray dashboard from the browser in your local machine:
 
 <pre style="background: black; color: #ddd">
-From your local machine:
 kubectl port-forward service/kuberay-trn1-head-svc 8265:8265 &
-Head to: http://localhost:8265/
+Head to: http://localhost:8265/ on your local browser.
 </pre>
 
 You can monitor the progress of the job in Ray Dashboard. 
 
-## 6. Fine-tuning Llama3.1 8B model <a name="finetuningmodel"></a>
+## 7. Fine-tuning Llama3.1 8B model <a name="finetuningmodel"></a>
 
 Use the command below to submit a Ray job for fine-tuning the model:
 
@@ -197,7 +252,7 @@ kubectl apply -f 3-llama3-finetune-trn1-rayjob-submit-finetuning-job.yaml
 
 Model artifacts will be created under `/shared/neuron_compile_cache/`. Check the Ray logs for “Training Completed” message.
 
-## 7. Clean-up <a name="cleanup"></a>
+## 8. Clean-up <a name="cleanup"></a>
 
  When you are finished with the tutorial, run the following commands on the jump host to remove the EKS cluster and associated resources:
 
@@ -209,19 +264,19 @@ kubectl delete -f 2-llama3-finetune-trn1-rayjob-create-data.yaml
 # Delete Ray Cluster
 kubectl delete -f 1-llama3-finetune-trn1-create-raycluster.yaml
 
-# Delete the RayCluster Resources:
-cd gen-ai/training/raytrain-llama2-pretrain-trn1
-kubectl delete -f llama2-pretrain-trn1-raycluster.yaml
+# Delete ECR Repo
+Head to the AWS console and delete the ECR repo: kuberay_trn1_llama3.1_pytorch2
 
 # Clean Up the EKS Cluster and Associated Resources:
 cd data-on-eks/ai-ml/trainium-inferentia
 ./cleanup.sh
 
+Terminate your EC2 jump host instance 
+
+Delete the eks_tutorial IAM user via the AWS Console.
 ```
 
-Lastly, terminate your jump host instance and delete the `eks_tutorial` IAM user via the AWS Console.
-
-## 8. Troubleshooting<a name="troubleshooting"></a>
+## 9. Troubleshooting<a name="troubleshooting"></a>
 
 <b>Known Issues:</b>
 
@@ -240,7 +295,7 @@ ZeroDivisionError: division by zero
 </pre>
 
 <b>Workaround:</b>
-If your Ray fine-tuning job fails with errors associated with `punkt` or `division by zero`, delete the ray job using the commands below, wait for 5 min and re-run it. If the job fails again, wait for 5 more min and re-run the second time.  
+If your Ray fine-tuning job fails with errors associated with `punkt` or `division by zero`, delete the Ray job using the commands below, wait for 5 min and re-run it. If the job fails again, wait for 5 more min and re-run the second time.  
 
 <pre style="background: black; color: #ddd">
 kubectl delete -f 3-llama3-finetune-trn1-rayjob-submit-finetuning-job.yaml
@@ -252,7 +307,7 @@ If you still face issues, reach out to us via the [documentation](https://awsdoc
 <b>Probable Cause:</b>
 [Punkt](https://www.nltk.org/api/nltk.tokenize.punkt.html) is a tokenizer used in Natural Language Processing (NLP) that is part of the NLTK (Natural Language Toolkit) library in Python. These errors above seem to be associated with the code trying to use Punkt libraries before they have completely downloaded. We are actively investigating this issue. Till then, follow the workaround above.
 
-## 9. Contributors<a name="contributors"></a>
+## Contributors<a name="contributors"></a>
 Pradeep Kadubandi - AWS ML Engineer<br/>
 Chakra Nagarajan - AWS Principal Specialist SA - Accelerated Computing<br/>
 Sindhura Palakodety - AWS Senior ISV Generative AI Solutions Architect<br/>
