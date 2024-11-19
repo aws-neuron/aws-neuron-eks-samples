@@ -1,0 +1,28 @@
+# ----------------------------------------------------------------------------
+# RayJob: 3-llama3-finetune-trn1-rayjob-submit-finetuning-job
+#
+# Description:
+# This RayJob is responsible for the main finetune step of the Llama3 model. It runs a
+# Python script (`ray_train_llama3.py`) to perform the fine-tuning using AWS Neuron devices.
+# This step is critical for training the language model with the prepared dataset.
+
+# Usage:
+# Apply this configuration to your Kubernetes cluster using `kubectl apply -f 3-llama3-finetune-trn1-rayjob-submit-finetuning-job.yaml`.
+# Ensure that the Ray cluster (`kuberay-trn1`) is running and accessible in the specified namespace.
+# ----------------------------------------------------------------------------
+
+---
+apiVersion: ray.io/v1
+kind: RayJob
+metadata:
+  name: 3-llama3-finetune-trn1-rayjob-submit-finetuning-job
+spec:
+  submissionMode: K8sJobMode
+  entrypoint: "NEURON_NUM_DEVICES=32 bash tp_zero1_llama3_8b_hf_finetune_ptl.sh"
+  runtimeEnvYAML: |
+    working_dir: /llama3_finetune
+  clusterSelector:
+    ray.io/cluster: kuberay-trn1
+    rayClusterNamespace: default  # Replace with the namespace where your RayCluster is deployed
+  shutdownAfterJobFinishes: true
+  ttlSecondsAfterFinished: 60  # Time to live for the pod after completion (in seconds)
