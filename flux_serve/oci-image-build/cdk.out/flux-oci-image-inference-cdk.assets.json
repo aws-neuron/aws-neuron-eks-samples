@@ -1,0 +1,20 @@
+{
+  "version": "38.0.1",
+  "files": {
+    "54c3377f007eccdd78146d6ef1c9fe016f1cd6dc99c2088e7f65bb90e95689cc": {
+      "source": {
+        "path": "flux-oci-image-inference-cdk.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "133573815653-us-west-2": {
+          "bucketName": "cdk-hnb659fds-assets-133573815653-us-west-2",
+          "objectKey": "54c3377f007eccdd78146d6ef1c9fe016f1cd6dc99c2088e7f65bb90e95689cc.json",
+          "region": "us-west-2",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::133573815653:role/cdk-hnb659fds-file-publishing-role-133573815653-us-west-2"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}
