@@ -12,7 +12,7 @@ spec:
       schedulerName: my-scheduler
       containers:
       - name: app
-        image: 133573815653.dkr.ecr.us-west-2.amazonaws.com/model:amd64-neuron
+        image: 920372998901.dkr.ecr.us-west-2.amazonaws.com/model:amd64-neuron
         imagePullPolicy: Always
         volumeMounts:
           - name: dshm
@@ -22,9 +22,9 @@ spec:
         command: ["sh", "-c", "while true; do sleep 3600; done"]
         resources:
           limits:
-            aws.amazon.com/neuron: 6
+            aws.amazon.com/neuron: 8
           requests: 
-            aws.amazon.com/neuron: 6
+            aws.amazon.com/neuron: 8
         env:
         - name: COMPILER_WORKDIR_ROOT
           value: "/model"

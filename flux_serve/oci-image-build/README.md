@@ -6,18 +6,13 @@
 export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --output text --query Account)
 export AWS_REGION=us-west-2
 export BASE_IMAGE_AMD_XLA_TAG=2.5.1-neuronx-py310-sdk2.21.0-ubuntu22.04
-export BASE_IMAGE_AMD_CUD_TAG=2.3.0-gpu-py311-cu121-ubuntu20.04-ec2
-export BASE_IMAGE_ARM_CPU_TAG=2.3.0-cpu-py311-ubuntu20.04-ec2
 export IMAGE_AMD_XLA_TAG=amd64-neuron
-export IMAGE_AMD_CUD_TAG=amd64-cuda
-export IMAGE_ARM_CPU_TAG=aarch64-cpu
 export BASE_REPO=model
 export BASE_TAG=multiarch-ubuntu
 export BASE_AMD_TAG=amd64
 export GITHUB_BRANCH=master
 export GITHUB_USER=yahavb
 export GITHUB_REPO=aws-neuron-eks-samples
-export MODEL_DIR=sd2_compile_dir
 export CF_STACK=flux-oci-image-inference-cdk
 ```
 * Install needed packages

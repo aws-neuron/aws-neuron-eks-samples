@@ -56,15 +56,15 @@ class PipelineStack extends aws_cdk_lib_1.Stack {
         const GITHUB_USER = new aws_cdk_lib_1.CfnParameter(this, "GITHUBUSER", { type: "String" });
         const GITHUB_REPO = new aws_cdk_lib_1.CfnParameter(this, "GITHUBREPO", { type: "String" });
         const GITHUB_BRANCH = new aws_cdk_lib_1.CfnParameter(this, "GITHUBBRANCH", { type: "String" });
-        // uncomment when you test the stack and dont want to manually delete the ecr registry 
-        const base_registry = new ecr.Repository(this, `base_repo`, {
-            repositoryName: BASE_REPO.valueAsString,
-            imageScanOnPush: true
-        });
-        //const base_registry = ecr.Repository.fromRepositoryName(this,`base_repo`,BASE_REPO.valueAsString)
+        /* uncomment when you test the stack and dont want to manually delete the ecr registry
+        const base_registry = new ecr.Repository(this,`base_repo`,{
+          repositoryName:BASE_REPO.valueAsString,
+          imageScanOnPush: true
+        });*/
+        const base_registry = ecr.Repository.fromRepositoryName(this, `base_repo`, BASE_REPO.valueAsString);
         //create a roleARN for codebuild 
         const buildRole = new iam.Role(this, 'BaseCodeBuildDeployRole', {
-            roleName: 'hwagnisticBaseCodeBuildDeployRole',
+            roleName: 'fluxneuronBaseCodeBuildDeployRole',
             assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
         });
         buildRole.addToPolicy(new iam.PolicyStatement({

@@ -14,10 +14,6 @@ Neuron device plugin, Neuron scheduler extension, Neuron scheduler
 
 ## Walkthrough
 * [Create cluster with Karpenter node pools that provisions `trn1` instances](https://karpenter.sh/docs/getting-started/getting-started-with-karpenter/)
-* Create an S3 bucket to store the model compiled graph and export the S3 bucket name as follow:
-```bash
-export MODEL_GRAPH_BUCKET="black-forest-labs-flux1-dev-neuron"
-```
 * [Deploy your HggingFace user secret as a k8s secret](https://kubernetes.io/docs/concepts/configuration/secret/)
 ```bash
 echo -n 'hf_myhftoken' | base64
@@ -33,8 +29,7 @@ metadata:
 data:
   HUGGINGFACE_TOKEN: encodedhfmyhftoken
 ```
-
-* [Enable Amazon S3 objects with Mountpoint for Amazon S3 CSI driver](https://docs.aws.amazon.com/eks/latest/userguide/s3-csi.html)
+* Create an S3 bucket to store the model compiled graph and [enable Amazon S3 objects with Mountpoint for Amazon S3 CSI driver](https://docs.aws.amazon.com/eks/latest/userguide/s3-csi.html)
 * [Deploy the OCI image pipeline](./oci-image-build)
 * [Deploy the Neuron device plugin and scheduler extention](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/containers/kubernetes-getting-started.html#deploy-neuron-device-plugin)
 ```bash
@@ -56,6 +51,6 @@ kubectl apply -f specs/flux-model-s3-storage.yaml
 ```
 * Compile the model for the requires shapes. We will demonstrate three shapes: 1024x576, 256x144, and 512x512 with `bfloat16`
 ```bash
-kubectl -f specs/compile-flux-1024x576.yaml
+kubectl apply -f specs/compile-flux-1024x576.yaml
 ```
 

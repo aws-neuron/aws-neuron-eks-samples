@@ -17,7 +17,7 @@ spec:
     driver: s3.csi.aws.com 
     volumeHandle: s3-csi-driver-volume
     volumeAttributes:
-      bucketName: black-forest-labs-flux1-dev-neuron
+      bucketName: flux1-dev-neuron
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

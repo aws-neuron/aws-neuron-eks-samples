@@ -18,4 +18,4 @@ RUN echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://p
 RUN apt-get update
 RUN apt-get install -y kubectl
 RUN kubectl version --client
-COPY * /
+COPY . .
