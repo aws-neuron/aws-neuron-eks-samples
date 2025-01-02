@@ -1,3 +1,5 @@
 package-lock.json
 .DS_Store
 node_modules/*
+oci-image-build/cdk.out/
+oci-image-build/node_modules/
