@@ -24,7 +24,7 @@ spec:
     cpu: 1000
   disruption:
     consolidationPolicy: WhenEmptyOrUnderutilized
-    consolidateAfter: 1m
+    consolidateAfter: 10m
 ---
 apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass
@@ -33,7 +33,9 @@ metadata:
 spec:
   amiFamily: AL2 # Amazon Linux 2
   amiSelectorTerms:
-    - name: "amazon-eks-node-1.31-*"
+    - id: "ami-0e73cfd34ee52b6a6"
+    - id: "ami-077b8064c2a1a3186"
+    - id: "ami-057dddc807f3f6644"
   role: "KarpenterNodeRole-flux-usw2"
   subnetSelectorTerms:
     - tags:

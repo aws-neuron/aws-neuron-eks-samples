@@ -9,7 +9,8 @@ from diffusers import FluxPipeline
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from typing import Any, Dict, Optional, Union
 
-COMPILER_WORKDIR_ROOT = os.path.dirname(__file__)
+#COMPILER_WORKDIR_ROOT = os.path.dirname(__file__)
+COMPILER_WORKDIR_ROOT = os.environ['COMPILER_WORKDIR_ROOT']
 
 TEXT_ENCODER_PATH = os.path.join(
     COMPILER_WORKDIR_ROOT,

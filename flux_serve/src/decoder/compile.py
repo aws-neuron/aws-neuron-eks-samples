@@ -6,7 +6,8 @@ import torch_neuronx
 from diffusers import FluxPipeline
 from model import TracingVAEDecoderWrapper
 
-COMPILER_WORKDIR_ROOT = os.path.dirname(__file__)
+#COMPILER_WORKDIR_ROOT = os.path.dirname(__file__)
+COMPILER_WORKDIR_ROOT = os.environ['COMPILER_WORKDIR_ROOT']
 DTYPE=torch.bfloat16
 
 def trace_vae(height, width):

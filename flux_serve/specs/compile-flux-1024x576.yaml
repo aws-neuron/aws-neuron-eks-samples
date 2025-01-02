@@ -26,6 +26,8 @@ spec:
           requests: 
             aws.amazon.com/neuron: 6
         env:
+        - name: COMPILER_WORKDIR_ROOT
+          value: "/model"
         - name: HEIGHT
           value: "1024"
         - name: WIDTH
