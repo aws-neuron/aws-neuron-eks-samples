@@ -8,6 +8,14 @@ import os
 from diffusers import FluxPipeline
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from typing import Any, Dict, Optional, Union
+from huggingface_hub import login
+from huggingface_hub import whoami
+hf_token=os.environ['HUGGINGFACE_TOKEN'].strip()
+try:
+  user_info = whoami()
+  print(f"Already logged in as {user_info['name']}")
+except:
+  login(hf_token,add_to_git_credential=True)
 
 #COMPILER_WORKDIR_ROOT = os.path.dirname(__file__)
 COMPILER_WORKDIR_ROOT = os.environ['COMPILER_WORKDIR_ROOT']

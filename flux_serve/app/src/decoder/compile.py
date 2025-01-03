@@ -6,6 +6,7 @@ import torch_neuronx
 from diffusers import FluxPipeline
 from model import TracingVAEDecoderWrapper
 from huggingface_hub import login
+from huggingface_hub import whoami
 hf_token=os.environ['HUGGINGFACE_TOKEN'].strip()
 try:
   user_info = whoami()

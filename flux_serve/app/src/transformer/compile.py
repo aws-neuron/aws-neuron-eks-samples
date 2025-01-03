@@ -15,6 +15,7 @@ from model import (TracingTransformerEmbedderWrapper,
                    init_transformer)
 
 from huggingface_hub import login
+from huggingface_hub import whoami
 hf_token=os.environ['HUGGINGFACE_TOKEN'].strip()
 try:
   user_info = whoami()
