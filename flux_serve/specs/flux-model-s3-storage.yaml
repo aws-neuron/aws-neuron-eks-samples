@@ -12,7 +12,7 @@ spec:
     namespace: default 
     name: s3-flux-pvc 
   mountOptions:
-    - region us-west-2
+    - region=us-west-2
   csi:
     driver: s3.csi.aws.com 
     volumeHandle: s3-csi-driver-volume
