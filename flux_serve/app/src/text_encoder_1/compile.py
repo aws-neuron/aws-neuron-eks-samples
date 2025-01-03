@@ -5,8 +5,7 @@ import torch_neuronx
 from diffusers import FluxPipeline
 from model import TracingCLIPTextEncoderWrapper
 
-#COMPILER_WORKDIR_ROOT = os.path.dirname(__file__)
-COMPILER_WORKDIR_ROOT = os.environ['COMPILER_WORKDIR_ROOT']
+COMPILER_WORKDIR_ROOT = os.path.dirname(__file__)
 DTYPE=torch.bfloat16
 
 def trace_text_encoder():

@@ -14,8 +14,7 @@ from model import (TracingTransformerEmbedderWrapper,
                    MyAttentionProcessor,
                    init_transformer)
 
-#COMPILER_WORKDIR_ROOT = os.path.dirname(__file__)
-COMPILER_WORKDIR_ROOT = os.environ['COMPILER_WORKDIR_ROOT']
+COMPILER_WORKDIR_ROOT = os.path.dirname(__file__)
 TP_DEGREE=8
 DTYPE=torch.bfloat16
 

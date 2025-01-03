@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -x
 
 find . -type d \( -name "compiled_model" -o -name "__pycache__" -o -name "compiler_workdir" \) -exec rm -rf {} +
 
