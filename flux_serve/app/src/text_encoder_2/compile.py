@@ -11,6 +11,9 @@ from model import (
     TracingT5TextEncoderWrapper,
     init_text_encoder_2,
 )
+from huggingface_hub import login
+hf_token=os.environ['HUGGINGFACE_TOKEN'].strip()
+login(hf_token,add_to_git_credential=True)
 
 COMPILER_WORKDIR_ROOT = os.path.dirname(__file__)
 TP_DEGREE=8

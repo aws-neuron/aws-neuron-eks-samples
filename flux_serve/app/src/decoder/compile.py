@@ -5,6 +5,9 @@ import torch
 import torch_neuronx
 from diffusers import FluxPipeline
 from model import TracingVAEDecoderWrapper
+from huggingface_hub import login
+hf_token=os.environ['HUGGINGFACE_TOKEN'].strip()
+login(hf_token,add_to_git_credential=True)
 
 COMPILER_WORKDIR_ROOT = os.path.dirname(__file__)
 DTYPE=torch.bfloat16
