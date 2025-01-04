@@ -40,6 +40,9 @@ VAE_DECODER_PATH = os.path.join(
     COMPILER_WORKDIR_ROOT,
     'decoder/compiled_model/model.pt')
 
+TEXT_ENCODER_2_DIR = os.path.join(
+    COMPILER_WORKDIR_ROOT,
+    'text_encoder_2/compiled_model/text_encoder_2')
 EMBEDDERS_DIR = os.path.join(
     COMPILER_WORKDIR_ROOT,
     'transformer/compiled_model/embedders')
@@ -168,23 +171,22 @@ def load_model(
         width,
         max_sequence_length,
         num_inference_steps):
-    pipe = FluxPipeline.from_pretrained(
-        "black-forest-labs/FLUX.1-dev",
-        torch_dtype=torch.bfloat16)
-    with torch_neuronx.experimental.neuron_cores_context(start_nc=0):
+    with torch_neuronx.experimental.neuron_cores_context(start_nc=8):
+       pipe = CustomFluxPipeline.from_pretrained(
+            "black-forest-labs/FLUX.1-dev",
+            torch_dtype=torch.bfloat16)
+
+    with torch_neuronx.experimental.neuron_cores_context(start_nc=8):
         pipe.text_encoder = NeuronFluxCLIPTextEncoderModel(
             pipe.text_encoder.dtype,
             torch.jit.load(TEXT_ENCODER_PATH))
-    with torch_neuronx.experimental.neuron_cores_context(start_nc=8):
-        pipe.text_encoder_2 = NeuronFluxT5TextEncoderModel(
-            pipe.text_encoder_2.dtype,
-            torch.jit.load(TEXT_ENCODER_2_PATH))
-    pipe.transformer = NeuronFluxTransformer2DModel(
-        pipe.transformer.config,
-        pipe.transformer.x_embedder,
-        pipe.transformer.context_embedder)
+    
     with torch_neuronx.experimental.neuron_cores_context(start_nc=8):
         pipe.vae.decoder = torch.jit.load(VAE_DECODER_PATH)
+    
+    with torch_neuronx.experimental.neuron_cores_context(start_nc=0, nc_count=8):
+        sharded_text_encoder_2 = neuronx_distributed.trace.parallel_model_load(TEXT_ENCODER_2_DIR)
+        pipe.text_encoder_2 = TextEncoder2Wrapper(sharded_text_encoder_2)
 
     return pipe
 
