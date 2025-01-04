@@ -262,5 +262,5 @@ def text2img(prompt,num_inference_steps):
 
 model=load_model(prompt,height,width,max_sequence_length,num_inference_steps)
 model_inputs={'prompt':prompt,'height':height,'width':width,'max_sequence_length':max_sequence_length,'num_inference_steps': num_inference_steps,'guidance_scale':guidance_scale}
-test_name=f"flux1-dev-50runs on {nodepool};num_inference_steps:{num_inference_steps}"
+test_name=f"flux1-dev-50runs with dim {height}x{width} on {nodepool};num_inference_steps:{num_inference_steps}"
 benchmark(50,test_name,model,model_inputs)
