@@ -28,6 +28,7 @@ spec:
           cd /src
           ./compile.sh 
           cp -r * /model/1024x576
+          python /benchmark-flux.py 
           while true; do sleep 3600; done
         resources:
           limits:
@@ -35,6 +36,8 @@ spec:
           requests: 
             aws.amazon.com/neuron: 8
         env:
+        - name: COMPILER_WORKDIR_ROOT
+          value: "/model/1024x576"
         - name: HEIGHT
           value: "1024"
         - name: WIDTH
