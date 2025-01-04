@@ -6,17 +6,12 @@ import torch.nn as nn
 import torch_neuronx
 import neuronx_distributed
 import os
-import gradio as gr
-from fastapi import FastAPI
-from huggingface_hub import login
 
 from diffusers import FluxPipeline
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from typing import Any, Dict, Optional, Union
-
-
-prompt= "A cat holding a sign that says hello world" 
-num_inference_steps=20
+from huggingface_hub import login
+from huggingface_hub import whoami
 
 nodepool=os.environ['NODEPOOL']
 model_id=os.environ['MODEL_ID']
@@ -26,9 +21,17 @@ width=int(os.environ['WIDTH'])
 max_sequence_length=int(os.environ['MAX_SEQ_LEN'])
 guidance_scale=float(os.environ['GUIDANCE_SCALE'])
 
-login(hf_token,add_to_git_credential=True)
+prompt= "A cat holding a sign that says hello world" 
+num_inference_steps=20
 
-COMPILER_WORKDIR_ROOT=os.environ['COMPILER_WORKDIR_ROOT']
+hf_token=os.environ['HUGGINGFACE_TOKEN'].strip()
+try:
+  user_info = whoami()
+  print(f"Already logged in as {user_info['name']}")
+except:
+  login(hf_token,add_to_git_credential=True)
+
+COMPILER_WORKDIR_ROOT = os.environ['COMPILER_WORKDIR_ROOT']
 
 TEXT_ENCODER_PATH = os.path.join(
     COMPILER_WORKDIR_ROOT,
@@ -56,6 +59,23 @@ TRANSFORMER_BLOCKS_DIR = os.path.join(
     COMPILER_WORKDIR_ROOT,
     'transformer/compiled_model/transformer_blocks')
 
+class CustomFluxPipeline(FluxPipeline):
+    @property
+    def _execution_device(self):
+        return torch.device("cpu")
+
+class TextEncoder2Wrapper(nn.Module):
+    def __init__(self, sharded_model,dtype=torch.bfloat16):
+        super().__init__()
+        self.sharded_model = sharded_model
+        self.dtype = dtype
+
+    def forward(self, input_ids, output_hidden_states=False, **kwargs):
+        attention_mask = (input_ids != 0).long()
+        output = self.sharded_model(input_ids,attention_mask)
+        last_hidden_state = output[0]
+        processed_output = last_hidden_state
+        return (processed_output,)
 
 class NeuronFluxTransformer2DModel(nn.Module):
     def __init__(
@@ -65,19 +85,12 @@ class NeuronFluxTransformer2DModel(nn.Module):
         context_embedder
     ):
         super().__init__()
-        with torch_neuronx.experimental.neuron_cores_context(start_nc=4,
-                                                             nc_count=8):
-            self.embedders_model = \
-                  neuronx_distributed.trace.parallel_model_load(EMBEDDERS_DIR)
-            self.transformer_blocks_model = \
-                neuronx_distributed.trace.parallel_model_load(
-                    TRANSFORMER_BLOCKS_DIR)
-            self.single_transformer_blocks_model = \
-                neuronx_distributed.trace.parallel_model_load(
-                    SINGLE_TRANSFORMER_BLOCKS_DIR)
-            self.out_layers_model = \
-                neuronx_distributed.trace.parallel_model_load(
-                    OUT_LAYERS_DIR)
+        with torch_neuronx.experimental.neuron_cores_context(start_nc=0, nc_count=8):
+            self.embedders_model = neuronx_distributed.trace.parallel_model_load(EMBEDDERS_DIR)
+            self.out_layers_model = neuronx_distributed.trace.parallel_model_load(OUT_LAYERS_DIR)
+            self.transformer_blocks_model = neuronx_distributed.trace.parallel_model_load(TRANSFORMER_BLOCKS_DIR)
+            self.single_transformer_blocks_model = neuronx_distributed.trace.parallel_model_load(SINGLE_TRANSFORMER_BLOCKS_DIR)
+
         self.config = config
         self.x_embedder = x_embedder
         self.context_embedder = context_embedder
@@ -153,18 +166,6 @@ class CLIPEncoderOutput():
     def __init__(self, dictionary):
         self.pooler_output = dictionary["pooler_output"]
 
-
-class NeuronFluxT5TextEncoderModel(nn.Module):
-    def __init__(self, dtype, encoder):
-        super().__init__()
-        self.dtype = dtype
-        self.encoder = encoder
-        self.device = torch.device("cpu")
-
-    def forward(self, emb, output_hidden_states):
-        return torch.unsqueeze(self.encoder(emb)["last_hidden_state"], 1)
-
-
 def load_model(
         prompt,
         height,
@@ -188,6 +189,11 @@ def load_model(
         sharded_text_encoder_2 = neuronx_distributed.trace.parallel_model_load(TEXT_ENCODER_2_DIR)
         pipe.text_encoder_2 = TextEncoder2Wrapper(sharded_text_encoder_2)
 
+    pipe.transformer = NeuronFluxTransformer2DModel(
+        pipe.transformer.config,
+        pipe.transformer.x_embedder,
+        pipe.transformer.context_embedder)
+
     return pipe
 
 def benchmark(n_runs, test_name, model, model_inputs):
@@ -202,7 +208,7 @@ def benchmark(n_runs, test_name, model, model_inputs):
         latency_collector.pre_hook()
         res = model(**model_inputs)
         image=res.images[0]
-        image.save(os.path.join(COMPILER_WORKDIR_ROOT, "flux-dev.png"))
+        #image.save(os.path.join("/tmp", "flux-dev.png"))
         latency_collector.hook()
 
     p0_latency_ms = latency_collector.percentile(0) * 1000
@@ -254,13 +260,7 @@ def text2img(prompt,num_inference_steps):
   return image, str(total_time)
 
 
-model=load_model(
-        prompt,
-        height,
-        width,
-        max_sequence_length,
-        num_inference_steps
-)
+model=load_model(prompt,height,width,max_sequence_length,num_inference_steps)
 model_inputs={'prompt':prompt,'height':height,'width':width,'max_sequence_length':max_sequence_length,'num_inference_steps': num_inference_steps,'guidance_scale':guidance_scale}
-test_name="flux1-dev-50runs on "+nodepool+";num_inference_steps:"+num_inference_steps
+test_name=f"flux1-dev-50runs on {nodepool};num_inference_steps:{num_inference_steps}"
 benchmark(50,test_name,model,model_inputs)
