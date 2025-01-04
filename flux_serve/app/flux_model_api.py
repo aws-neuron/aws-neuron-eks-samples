@@ -78,6 +78,11 @@ TRANSFORMER_BLOCKS_DIR = os.path.join(
 # Login to Hugging Face
 login(hf_token, add_to_git_credential=True)
 
+class CustomFluxPipeline(FluxPipeline):
+    @property
+    def _execution_device(self):
+        return torch.device("cpu")
+
 class GenerateImageRequest(BaseModel):
     prompt: str
     num_inference_steps: int
