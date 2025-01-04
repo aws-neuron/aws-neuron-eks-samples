@@ -20,8 +20,6 @@ num_inference_steps=20
 
 nodepool=os.environ['NODEPOOL']
 model_id=os.environ['MODEL_ID']
-device=os.environ["DEVICE"]
-pod_name=os.environ['POD_NAME']
 hf_token=os.environ['HUGGINGFACE_TOKEN'].strip()
 height=int(os.environ['HEIGHT'])
 width=int(os.environ['WIDTH'])
