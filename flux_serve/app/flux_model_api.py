@@ -83,6 +83,19 @@ class CustomFluxPipeline(FluxPipeline):
     def _execution_device(self):
         return torch.device("cpu")
 
+class TextEncoder2Wrapper(nn.Module):
+    def __init__(self, sharded_model,dtype=torch.bfloat16):
+        super().__init__()
+        self.sharded_model = sharded_model
+        self.dtype = dtype
+
+    def forward(self, input_ids, output_hidden_states=False, **kwargs):
+        attention_mask = (input_ids != 0).long()
+        output = self.sharded_model(input_ids,attention_mask)
+        last_hidden_state = output[0]
+        processed_output = last_hidden_state
+        return (processed_output,)
+
 class GenerateImageRequest(BaseModel):
     prompt: str
     num_inference_steps: int
