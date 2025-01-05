@@ -69,5 +69,14 @@ Note the three pending Deployment Pods that Karpenter seeks to fulfill. Current 
 * Deploy the Flux serving frontend that includes Gradio app. 
 ```bash
 kubectl apply -f specs/flux-neuron-gradio.yaml
+kubectl apply -f specs/flux-neuron-ingress.yaml
 ```
+Discover the model serving endpoint by:
+```bash
+kubectl get ingress
+NAME          CLASS   HOSTS   ADDRESS                                             PORTS   AGE
+flux-neuron   alb     *       flux-neuron-658286526.us-west-2.elb.amazonaws.com   80      7h20m
+```
+
+Use [flux-neuron-658286526.us-west-2.elb.amazonaws.com/serve/](flux-neuron-658286526.us-west-2.elb.amazonaws.com/serve/)
 

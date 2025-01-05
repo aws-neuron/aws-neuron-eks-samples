@@ -3,10 +3,10 @@ import copy
 import os
 import torch
 import torch_neuronx
-import neuronx_distributed
 from diffusers import FluxPipeline
+from model import TracingT5TextEncoderWrapper
+import neuronx_distributed
 from transformers import T5EncoderModel
-
 from model import (
     TracingT5TextEncoderWrapper,
     init_text_encoder_2,
@@ -25,36 +25,15 @@ TP_DEGREE=8
 DTYPE=torch.bfloat16
 
 def build_text_encoder_2():
-    """
-    Build the T5 text encoder model, shard it, and wrap it in our tracing class.
-    Returns the final model + any (optional) kwargs in a dict, i.e. (model, {}).
-    This pattern is required by neuronx_distributed.trace.parallel_model_trace.
-    """
-    # Load pipeline and copy the text_encoder_2 from your flux pipeline
-    pipe = FluxPipeline.from_pretrained(
-        "black-forest-labs/FLUX.1-dev",
-        torch_dtype=DTYPE
-    )
-    # text_encoder_2 is presumably a T5EncoderModel or custom T5-based module
+    pipe = FluxPipeline.from_pretrained("black-forest-labs/FLUX.1-dev",torch_dtype=DTYPE)
     text_encoder_2 = copy.deepcopy(pipe.text_encoder_2)
     del pipe
 
-    # Optionally, if text_encoder_2 is not already a T5EncoderModel, you can
-    # modify the approach. But presumably, it's a T5EncoderModel or T5-like module.
-    # Shard the T5 model parameters across tp_degree ranks:
     init_text_encoder_2(text_encoder_2)
-
-    # Wrap it in a tracing module
     wrapper = TracingT5TextEncoderWrapper(text_encoder_2)
-
-    # Return the model plus optional kwargs (unused here)
     return wrapper, {}
 
-
 def trace_text_encoder_2(max_sequence_length=512):
-    """
-    Trace the T5 text encoder with parallel model trace.
-    """
     input_ids = torch.zeros((1, max_sequence_length), dtype=torch.int64)
     attention_mask = torch.ones((1, max_sequence_length), dtype=torch.int64)
 
@@ -79,14 +58,46 @@ def trace_text_encoder_2(max_sequence_length=512):
 
     del model
 
+'''
+def trace_text_encoder_2(max_sequence_length):
+    pipe = FluxPipeline.from_pretrained(
+        "black-forest-labs/FLUX.1-dev",
+        torch_dtype=torch.bfloat16)
+    text_encoder_2 = copy.deepcopy(pipe.text_encoder_2)
+    del pipe
 
-if __name__ == "__main__":
+    text_encoder_2 = TracingT5TextEncoderWrapper(text_encoder_2)
+
+    emb = torch.zeros((1, max_sequence_length), dtype=torch.int64)
+
+    text_encoder_2_neuron = torch_neuronx.trace(
+        text_encoder_2.neuron_text_encoder,
+        emb,
+        compiler_workdir=os.path.join(COMPILER_WORKDIR_ROOT,
+                                      'compiler_workdir'),
+        compiler_args=["--enable-fast-loading-neuron-binaries"]
+        )
+
+    torch_neuronx.async_load(text_encoder_2_neuron)
+
+    compiled_model_path = os.path.join(COMPILER_WORKDIR_ROOT, 'compiled_model')
+    if not os.path.exists(compiled_model_path):
+        os.mkdir(compiled_model_path)
+    text_encoder_2_filename = os.path.join(COMPILER_WORKDIR_ROOT,
+                                           'compiled_model/model.pt')
+    torch.jit.save(text_encoder_2_neuron, text_encoder_2_filename)
+
+    del text_encoder_2
+    del text_encoder_2_neuron
+'''
+
+if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "-m",
         "--max_sequence_length",
         type=int,
-        default=32,
+        default=512,
         help="maximum sequence length for the text embeddings"
     )
     args = parser.parse_args()

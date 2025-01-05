@@ -31,3 +31,4 @@ class TracingCLIPTextEncoderWrapper(nn.Module):
             output_hidden_states=output_hidden_states,
             return_dict=True,
         )
+

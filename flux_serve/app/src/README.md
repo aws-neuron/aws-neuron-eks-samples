@@ -1,4 +1,4 @@
-# Compile Flux
+# flux-enigma
 
 clean previous compilation
 ```bash

@@ -11,9 +11,7 @@ from model import (TracingTransformerEmbedderWrapper,
                    TracingTransformerBlockWrapper,
                    TracingSingleTransformerBlockWrapper,
                    TracingTransformerOutLayerWrapper,
-                   MyAttentionProcessor,
                    init_transformer)
-
 from huggingface_hub import login
 from huggingface_hub import whoami
 hf_token=os.environ['HUGGINGFACE_TOKEN'].strip()
@@ -25,12 +23,12 @@ except:
 
 COMPILER_WORKDIR_ROOT = os.path.dirname(__file__)
 TP_DEGREE=8
-DTYPE=torch.bfloat16
+
 
 def trace_transformer_embedders():
     pipe = FluxPipeline.from_pretrained(
         "black-forest-labs/FLUX.1-dev",
-        torch_dtype=DTYPE)
+        torch_dtype=torch.bfloat16)
     transformer: FluxTransformer2DModel = copy.deepcopy(pipe.transformer)
     del pipe
     init_transformer(transformer)
@@ -44,10 +42,7 @@ def trace_transformer_embedders():
 def trace_transformer_blocks():
     pipe = FluxPipeline.from_pretrained(
         "black-forest-labs/FLUX.1-dev",
-        torch_dtype=DTYPE)
-    for block in pipe.transformer.transformer_blocks:
-        block.attn.processor = MyAttentionProcessor()
-
+        torch_dtype=torch.bfloat16)
     transformer: FluxTransformer2DModel = copy.deepcopy(pipe.transformer)
     del pipe
     init_transformer(transformer)
@@ -60,9 +55,7 @@ def trace_transformer_blocks():
 def trace_single_transformer_blocks():
     pipe = FluxPipeline.from_pretrained(
         "black-forest-labs/FLUX.1-dev",
-        torch_dtype=DTYPE)
-    for block in pipe.transformer.single_transformer_blocks:
-        block.attn.processor = MyAttentionProcessor()
+        torch_dtype=torch.bfloat16)
     transformer: FluxTransformer2DModel = copy.deepcopy(pipe.transformer)
     del pipe
     init_transformer(transformer)
@@ -75,7 +68,7 @@ def trace_single_transformer_blocks():
 def trace_transformer_out_layers():
     pipe = FluxPipeline.from_pretrained(
         "black-forest-labs/FLUX.1-dev",
-        torch_dtype=DTYPE)
+        torch_dtype=torch.bfloat16)
     transformer: FluxTransformer2DModel = copy.deepcopy(pipe.transformer)
     del pipe
     init_transformer(transformer)
@@ -87,12 +80,12 @@ def trace_transformer_out_layers():
 
 def trace_transformer(height, width, max_sequence_length):
     hidden_states = torch.rand([1, height * width // 256, 3072],
-                               dtype=DTYPE)
-    timestep = torch.rand([1], dtype=DTYPE)
+                               dtype=torch.bfloat16)
+    timestep = torch.rand([1], dtype=torch.bfloat16)
     guidance = torch.rand([1], dtype=torch.float32)
-    pooled_projections = torch.rand([1, 768], dtype=DTYPE)
-    txt_ids = torch.rand([1, max_sequence_length, 3], dtype=DTYPE)
-    img_ids = torch.rand([1, height * width // 256, 3], dtype=DTYPE)
+    pooled_projections = torch.rand([1, 768], dtype=torch.bfloat16)
+    txt_ids = torch.rand([1, max_sequence_length, 3], dtype=torch.bfloat16)
+    img_ids = torch.rand([1, height * width // 256, 3], dtype=torch.bfloat16)
     sample_inputs = hidden_states, timestep, guidance, pooled_projections, \
         txt_ids, img_ids
 
@@ -117,13 +110,13 @@ def trace_transformer(height, width, max_sequence_length):
     del model
 
     hidden_states = torch.rand([1, height * width // 256, 3072],
-                               dtype=DTYPE)
+                               dtype=torch.bfloat16)
     encoder_hidden_states = torch.rand([1, max_sequence_length, 3072],
-                                       dtype=DTYPE)
-    temb = torch.rand([1, 3072], dtype=DTYPE)
+                                       dtype=torch.bfloat16)
+    temb = torch.rand([1, 3072], dtype=torch.bfloat16)
     image_rotary_emb = torch.rand(
         [1, 1, height * width // 256 + max_sequence_length, 64, 2, 2],
-        dtype=DTYPE)
+        dtype=torch.bfloat16)
     sample_inputs = hidden_states, encoder_hidden_states, \
         temb, image_rotary_emb
 
@@ -146,11 +139,11 @@ def trace_transformer(height, width, max_sequence_length):
 
     hidden_states = torch.rand(
         [1, height * width // 256 + max_sequence_length, 3072],
-        dtype=DTYPE)
-    temb = torch.rand([1, 3072], dtype=DTYPE)
+        dtype=torch.bfloat16)
+    temb = torch.rand([1, 3072], dtype=torch.bfloat16)
     image_rotary_emb = torch.rand(
         [1, 1, height * width // 256 + max_sequence_length, 64, 2, 2],
-        dtype=DTYPE)
+        dtype=torch.bfloat16)
     sample_inputs = hidden_states, temb, image_rotary_emb
 
     model = neuronx_distributed.trace.parallel_model_trace(
@@ -172,10 +165,10 @@ def trace_transformer(height, width, max_sequence_length):
 
     hidden_states = torch.rand(
         [1, height * width // 256 + max_sequence_length, 3072],
-        dtype=DTYPE)
+        dtype=torch.bfloat16)
     encoder_hidden_states = torch.rand([1, max_sequence_length, 3072],
-                                       dtype=DTYPE)
-    temb = torch.rand([1, 3072], dtype=DTYPE)
+                                       dtype=torch.bfloat16)
+    temb = torch.rand([1, 3072], dtype=torch.bfloat16)
     sample_inputs = hidden_states, encoder_hidden_states, temb
 
     model = neuronx_distributed.trace.parallel_model_trace(
@@ -202,21 +195,21 @@ if __name__ == '__main__':
         "-hh",
         "--height",
         type=int,
-        default=256,
+        default=1024,
         help="height of images to be generated by compilation of this model"
     )
     parser.add_argument(
         "-w",
         "--width",
         type=int,
-        default=256,
+        default=1024,
         help="width of images to be generated by compilation of this model"
     )
     parser.add_argument(
         "-m",
         "--max_sequence_length",
         type=int,
-        default=32,
+        default=512,
         help="maximum sequence length for the text embeddings"
     )
     args = parser.parse_args()

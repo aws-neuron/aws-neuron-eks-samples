@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+
 from transformers.modeling_outputs import BaseModelOutput
 from typing import Optional, Union, Tuple
 
@@ -8,13 +9,9 @@ from neuronx_distributed.parallel_layers.layers import (
     ColumnParallelLinear,
     RowParallelLinear,
 )
-
 DTYPE=torch.bfloat16
 
 def get_sharded_data(data: torch.Tensor, dim: int) -> torch.Tensor:
-    """
-    Utility function to slice a parameter across tensor-parallel ranks.
-    """
     tp_rank = parallel_state.get_tensor_model_parallel_rank()
     tp_size = parallel_state.get_tensor_model_parallel_size()
     per_partition_size = data.shape[dim] // tp_size
@@ -35,10 +32,6 @@ def get_sharded_data(data: torch.Tensor, dim: int) -> torch.Tensor:
         raise ValueError("Partition dimension must be 0 or 1.")
 
 def shard_t5_attention(t5_attention):
-    """
-    Shard the T5 self-attention q, k, v, o projections to ColumnParallel & RowParallel.
-    This is analogous to shard_attn() in transformer/model.py but adapted for T5.
-    """
     # Shard q
     orig_q = t5_attention.q
     t5_attention.q = ColumnParallelLinear(
@@ -93,16 +86,6 @@ def shard_t5_attention(t5_attention):
     del orig_o
 
 def shard_t5_ff(ff_block):
-    """
-    Shard the T5 feed-forward block (DenseReluDense or DenseGatedActDense).
-    Depending on the HF version, T5 may implement FF as:
-      - T5DenseReluDense, with attributes: ff_block.wi, ff_block.wo
-      - T5DenseGatedActDense, with attributes: ff_block.wi_0, ff_block.wi_1, ff_block.wo
-    We'll shard them similarly:
-      - ColumnParallel for the 'wi_*' inputs
-      - RowParallel for the 'wo' output
-    """
-
     # Helper function for ColumnParallel
     def make_column_parallel(orig_layer):
         from neuronx_distributed.parallel_layers.layers import ColumnParallelLinear
@@ -132,9 +115,6 @@ def shard_t5_ff(ff_block):
             new_layer.bias.data = orig_layer.bias.data.detach()
         return new_layer
 
-    # -------------------------------------------------------------
-    # 1) T5DenseReluDense -> ff_block.wi, ff_block.wo
-    # -------------------------------------------------------------
     if hasattr(ff_block, "wi") and hasattr(ff_block, "wo"):
         orig_wi = ff_block.wi
         ff_block.wi = make_column_parallel(orig_wi)
@@ -144,9 +124,6 @@ def shard_t5_ff(ff_block):
         ff_block.wo = make_row_parallel(orig_wo)
         del orig_wo
 
-    # -------------------------------------------------------------
-    # 2) T5DenseGatedActDense -> ff_block.wi_0, ff_block.wi_1, ff_block.wo
-    # -------------------------------------------------------------
     elif hasattr(ff_block, "wi_0") and hasattr(ff_block, "wi_1") and hasattr(ff_block, "wo"):
         orig_wi_0 = ff_block.wi_0
         ff_block.wi_0 = make_column_parallel(orig_wi_0)
@@ -167,10 +144,6 @@ def shard_t5_ff(ff_block):
         )
 
 def init_text_encoder_2(t5_encoder):
-    """
-    Loop over T5Blocks in t5_encoder to shard the self-attention and FF modules.
-    Typically, T5EncoderModel has model.encoder.block[i].layer[0/1].
-    """
     encoder_stack = t5_encoder.encoder  # T5Stack
     for block in encoder_stack.block:
         # block.layer[0] => T5LayerSelfAttention
@@ -180,11 +153,8 @@ def init_text_encoder_2(t5_encoder):
         ff = block.layer[1].DenseReluDense
         shard_t5_ff(ff)
 
+
 class TracingT5TextEncoderWrapper(nn.Module):
-    """
-    Wrap the T5 encoder in a forward that returns a stable tuple or BaseModelOutput,
-    suitable for compilation and serving on Neuron devices.
-    """
     def __init__(self, text_encoder):
         super().__init__()
         self.neuron_text_encoder = text_encoder
@@ -202,8 +172,10 @@ class TracingT5TextEncoderWrapper(nn.Module):
         output_hidden_states: Optional[bool] = False,
         return_dict: Optional[bool] = False,
     ) -> Union[Tuple[torch.FloatTensor], BaseModelOutput]:
+        return_dict = return_dict if return_dict is not None \
+            else self.config.use_return_dict
 
-        return self.neuron_text_encoder(
+        encoder_outputs = self.neuron_text_encoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
             inputs_embeds=inputs_embeds,
@@ -212,4 +184,6 @@ class TracingT5TextEncoderWrapper(nn.Module):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+
+        return encoder_outputs
 

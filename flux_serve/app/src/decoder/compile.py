@@ -26,7 +26,7 @@ def trace_vae(height, width):
     del pipe
 
     latents = torch.rand([1, 16, height // 8, width // 8],
-                         dtype=DTYPE)
+                         dtype=torch.bfloat16)
 
     decoder_neuron = torch_neuronx.trace(
         decoder,

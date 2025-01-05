@@ -8,22 +8,7 @@ from neuronx_distributed.parallel_layers import parallel_state
 from neuronx_distributed.parallel_layers.layers \
     import ColumnParallelLinear, RowParallelLinear
 
-from diffusers.models.attention_processor import AttnProcessor
-
 DTYPE=torch.bfloat16
-
-class MyAttentionProcessor(AttnProcessor):
-    def __call__(self, attn, hidden_states,encoder_hidden_states=None,cross_attention_kwargs=None,**kwargs):
-        if hidden_states is not None:
-          n_heads = 24  
-          head_dim = 128
-          batch, seq_len, dim = hidden_states.shape
-          assert dim == n_heads * head_dim, f"Dim mismatch: got {dim}, expected {n_heads*head_dim}"
-        
-          hidden_states = hidden_states.view(batch, seq_len, n_heads, head_dim)
-          hidden_states = attn.norm_q(hidden_states)
-          hidden_states = hidden_states.view(batch, seq_len, dim)
-        return hidden_states, encoder_hidden_states
 
 class TracingTransformerEmbedderWrapper(nn.Module):
     def __init__(
@@ -141,15 +126,17 @@ class TracingSingleTransformerBlock(nn.Module):
         norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
         mlp_hidden_states = self.act_mlp(self.proj_mlp(norm_hidden_states))
 
-        #attn_output = self.attn(hidden_states=norm_hidden_states,image_rotary_emb=image_rotary_emb,)
-        attn_output, cross_output = self.attn(hidden_states=norm_hidden_states, image_rotary_emb=image_rotary_emb)
+        attn_output = self.attn(
+            hidden_states=norm_hidden_states,
+            image_rotary_emb=image_rotary_emb,
+        )
         gate = gate.unsqueeze(1)
         hidden_states = gate * (self.proj_out(attn_output)
                                 + self.proj_out_2(mlp_hidden_states))
         hidden_states = residual + hidden_states
         if hidden_states.dtype == torch.float16:
             hidden_states = hidden_states.clip(-65504, 65504)
-        out = self.proj_mlp(norm_hidden_states)
+
         return hidden_states
 
 
@@ -160,12 +147,12 @@ def get_sharded_data(data, dim):
     if dim == 0:
         return data[
             per_partition_size * tp_rank: per_partition_size * (tp_rank + 1)
-            ].clone().to(DTYPE)
+            ].clone().to(torch.bfloat16)
     elif dim == 1:
         return data[:,
                     per_partition_size * tp_rank: per_partition_size *
                     (tp_rank + 1)
-                    ].clone().to(DTYPE)
+                    ].clone().to(torch.bfloat16)
     else:
         raise Exception(
             f"Partiton value of 0,1 are supported, found {dim}."
@@ -173,14 +160,14 @@ def get_sharded_data(data, dim):
 
 
 def shard_attn(attn: Attention):
-    #attn.heads = 3
+    attn.heads = 3
 
     orig_q = attn.to_q
     attn.to_q = ColumnParallelLinear(
         attn.to_q.in_features,
         attn.to_q.out_features,
         bias=(attn.to_q.bias is not None),
-        gather_output=True)
+        gather_output=False)
     attn.to_q.weight.data = get_sharded_data(orig_q.weight.data, 0)
     if attn.to_q.bias is not None:
         attn.to_q.bias.data = get_sharded_data(orig_q.bias.data, 0)
@@ -191,7 +178,7 @@ def shard_attn(attn: Attention):
         attn.to_k.in_features,
         attn.to_k.out_features,
         bias=(attn.to_k.bias is not None),
-        gather_output=True)
+        gather_output=False)
     attn.to_k.weight.data = get_sharded_data(orig_k.weight.data, 0)
     if attn.to_k.bias is not None:
         attn.to_k.bias.data = get_sharded_data(orig_k.bias.data, 0)
@@ -202,7 +189,7 @@ def shard_attn(attn: Attention):
         attn.to_v.in_features,
         attn.to_v.out_features,
         bias=(attn.to_v.bias is not None),
-        gather_output=True)
+        gather_output=False)
     attn.to_v.weight.data = get_sharded_data(orig_v.weight.data, 0)
     if attn.to_v.bias is not None:
         attn.to_v.bias.data = get_sharded_data(orig_v.bias.data, 0)
@@ -213,7 +200,7 @@ def shard_attn(attn: Attention):
         attn.add_q_proj.in_features,
         attn.add_q_proj.out_features,
         bias=(attn.add_q_proj.bias is not None),
-        gather_output=True)
+        gather_output=False)
     attn.add_q_proj.weight.data = get_sharded_data(orig_q_proj.weight.data, 0)
     if attn.add_q_proj.bias is not None:
         attn.add_q_proj.bias.data = get_sharded_data(orig_q_proj.bias.data, 0)
@@ -224,7 +211,7 @@ def shard_attn(attn: Attention):
         attn.add_k_proj.in_features,
         attn.add_k_proj.out_features,
         bias=(attn.add_k_proj.bias is not None),
-        gather_output=True)
+        gather_output=False)
     attn.add_k_proj.weight.data = get_sharded_data(orig_k_proj.weight.data, 0)
     if attn.add_k_proj.bias is not None:
         attn.add_k_proj.bias.data = get_sharded_data(orig_k_proj.bias.data, 0)
@@ -235,7 +222,7 @@ def shard_attn(attn: Attention):
         attn.add_v_proj.in_features,
         attn.add_v_proj.out_features,
         bias=(attn.add_v_proj.bias is not None),
-        gather_output=True)
+        gather_output=False)
     attn.add_v_proj.weight.data = get_sharded_data(orig_v_proj.weight.data, 0)
     if attn.add_v_proj.bias is not None:
         attn.add_v_proj.bias.data = get_sharded_data(orig_v_proj.bias.data, 0)
@@ -246,7 +233,7 @@ def shard_attn(attn: Attention):
         attn.to_out[0].in_features,
         attn.to_out[0].out_features,
         bias=(attn.to_out[0].bias is not None),
-        input_is_parallel=False)
+        input_is_parallel=True)
     attn.to_out[0].weight.data = get_sharded_data(orig_out.weight.data, 1)
     if attn.to_out[0].bias is not None:
         attn.to_out[0].bias.data = orig_out.bias.data.detach()
@@ -257,25 +244,24 @@ def shard_attn(attn: Attention):
         attn.to_add_out.in_features,
         attn.to_add_out.out_features,
         bias=(attn.to_add_out.bias is not None),
-        input_is_parallel=False)
+        input_is_parallel=True)
     attn.to_add_out.weight.data = get_sharded_data(orig_out.weight.data, 1)
     if attn.to_add_out.bias is not None:
         attn.to_add_out.bias.data = orig_out.bias.data.detach()
     del (orig_out)
-
     return attn
 
 
 def shard_attn_lite(block):
     attn = block.attn
-    #attn.heads = 3
+    attn.heads = 3
 
     orig_q = attn.to_q
     attn.to_q = ColumnParallelLinear(
         attn.to_q.in_features,
         attn.to_q.out_features,
         bias=(attn.to_q.bias is not None),
-        gather_output=True)
+        gather_output=False)
     attn.to_q.weight.data = get_sharded_data(orig_q.weight.data, 0)
     if attn.to_q.bias is not None:
         attn.to_q.bias.data = get_sharded_data(orig_q.bias.data, 0)
@@ -286,7 +272,7 @@ def shard_attn_lite(block):
         attn.to_k.in_features,
         attn.to_k.out_features,
         bias=(attn.to_k.bias is not None),
-        gather_output=True)
+        gather_output=False)
     attn.to_k.weight.data = get_sharded_data(orig_k.weight.data, 0)
     if attn.to_k.bias is not None:
         attn.to_k.bias.data = get_sharded_data(orig_k.bias.data, 0)
@@ -297,7 +283,7 @@ def shard_attn_lite(block):
         attn.to_v.in_features,
         attn.to_v.out_features,
         bias=(attn.to_v.bias is not None),
-        gather_output=True)
+        gather_output=False)
     attn.to_v.weight.data = get_sharded_data(orig_v.weight.data, 0)
     if attn.to_v.bias is not None:
         attn.to_v.bias.data = get_sharded_data(orig_v.bias.data, 0)
