@@ -80,7 +80,7 @@ def healthy():
 @app.get("/readiness")
 def ready():
     return {"message": "Service is ready"}
-
+'''
 with gr.Blocks() as interface:
     gr.Markdown(f"# {model_id} Image Generation App")
     gr.Markdown("Enter a prompt and specify the number of inference steps to generate images in different shapes.")
@@ -116,28 +116,62 @@ with gr.Blocks() as interface:
         outputs=image_components + exec_time_components,
         api_name="generate_images"
     )
+'''
+with gr.Blocks() as interface:
+    gr.Markdown(f"# {model_id} Image Generation App")
+    gr.Markdown("Enter a prompt and specify the number of inference steps to generate images in different shapes.")
+
+    with gr.Row():
+        with gr.Column(scale=1):
+            prompt = gr.Textbox(
+                label="Prompt",
+                lines=1,
+                placeholder="Enter your prompt here...",
+                elem_id="prompt-box"
+            )
+            inference_steps = gr.Number(
+                label="Inference Steps", 
+                value=10, 
+                precision=0, 
+                info="Enter the number of inference steps; higher number takes more time but produces better image",
+                elem_id="steps-number"
+            )
+            generate_button = gr.Button("Generate Images", variant="primary")
+        
+        with gr.Column(scale=2):
+            image_components = []
+            exec_time_components = []
+
+            with gr.Row():
+                for idx, model in enumerate(models):
+                    with gr.Column():
+                        # Title
+                        gr.Markdown(f"**{model['name']}**")
+
+                        # Scale down the image
+                        preview_height = int(model['height'] / 2)
+                        preview_width = int(model['width'] / 2)
+
+                        img = gr.Image(
+                            label="",
+                            height=preview_height,
+                            width=preview_width,
+                            interactive=False
+                        )
+                        # Use Markdown for simpler smaller text
+                        exec_time = gr.Markdown(value="")
+
+                        image_components.append(img)
+                        exec_time_components.append(exec_time)
+
+    # callback for the button
+    generate_button.click(
+        fn=call_model_api,
+        inputs=[prompt, inference_steps],
+        outputs=image_components + exec_time_components,
+        api_name="generate_images"
+    )
+
 app = gr.mount_gradio_app(app, interface, path="/serve")
-'''
-interface = gr.Interface(
-    fn=call_model_api,
-    inputs=[
-        gr.Textbox(label="Prompt", lines=1, placeholder="Enter your prompt here..."),
-        gr.Number(
-            label="Inference Steps", 
-            value=10, 
-            precision=0, 
-            info="Enter the number of inference steps; higher number takes more time but produces better image"
-        )
-    ],
-    outputs=[
-        gr.Image(label=f"Image from {models[0]['name']}", height=models[0]['height'], width=models[0]['width']),
-        gr.Textbox(label=f"Execution Time ({models[0]['name']})"),
-        gr.Image(label=f"Image from {models[1]['name']}", height=models[1]['height'], width=models[1]['width']),
-        gr.Textbox(label=f"Execution Time ({models[1]['name']})"),
-        gr.Image(label=f"Image from {models[2]['name']}", height=models[2]['height'], width=models[2]['width']),
-        gr.Textbox(label=f"Execution Time ({models[2]['name']})"),
-    ],
-    description="Enter a prompt and specify the number of inference steps to generate images using the model pipeline."
-)
-app = gr.mount_gradio_app(app,interface, path="/serve")
-'''
+
+app = gr.mount_gradio_app(app, interface, path="/serve")
