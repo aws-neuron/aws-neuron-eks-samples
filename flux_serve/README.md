@@ -96,4 +96,5 @@ RESULT FOR flux1-dev-50runs with dim 256x144 on amd-neuron-inf2;num_inference_st
 | 256x144       | Trn1        | 585.6          | 588.1          | 592.2          | 592.5          | 597.8          | 597.8           |
 | 1024x576      | Inf2        | 9040.2         | 9080.8         | 9115.6         | 9120.6         | 9123.7         | 9123.7          |
 | 256x144       | Inf2        | 3067.9         | 3075.7         | 3079.8         | 3081.2         | 3088.5         | 3088.5          |
+
 *Table 1-Latency benchmark between 8 Trn1 NDs and 6 Inf2 NDs with 10 inference_steps for 50 iterations*
