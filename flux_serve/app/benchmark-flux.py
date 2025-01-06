@@ -22,7 +22,7 @@ max_sequence_length=int(os.environ['MAX_SEQ_LEN'])
 guidance_scale=float(os.environ['GUIDANCE_SCALE'])
 
 prompt= "A cat holding a sign that says hello world" 
-num_inference_steps=20
+num_inference_steps=10
 
 hf_token=os.environ['HUGGINGFACE_TOKEN'].strip()
 try:

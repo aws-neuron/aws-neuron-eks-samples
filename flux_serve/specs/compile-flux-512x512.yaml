@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: compile-1024x576
+  name: compile-512x512
 spec:
   template:
     spec:
@@ -24,26 +24,26 @@ spec:
         - "-exc"
         - |
           set -x
-          mkdir -p /model/1024x576
-          cd /src
-          ./compile.sh 
-          cp -r * /model/1024x576
-          python /benchmark-flux.py 
+          #mkdir -p /model/512x512
+          #cd /src
+          #./compile.sh 
+          #cp -r * /model/512x512
+          #python /benchmark-flux.py 
           while true; do sleep 3600; done
         resources:
           limits:
-            aws.amazon.com/neuron: 8
+            aws.amazon.com/neuron: 6
           requests: 
-            aws.amazon.com/neuron: 8
+            aws.amazon.com/neuron: 6
         env:
         - name: NODEPOOL
           value: "amd-neuron-trn1"
         - name: COMPILER_WORKDIR_ROOT
-          value: "/model/1024x576"
+          value: "/model/512x512"
         - name: HEIGHT
-          value: "1024"
+          value: "512"
         - name: WIDTH
-          value: "576"
+          value: "512"
         - name: MAX_SEQ_LEN
           value: "32"
         - name: GUIDANCE_SCALE
