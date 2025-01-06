@@ -54,14 +54,14 @@ kubectl apply -f specs/compile-flux-1024x576.yaml
 kubectl apply -f specs/compile-flux-256x144.yaml
 kubectl apply -f specs/compile-flux-512x512.yaml
 ```
-Note the three pending Jobs that Karpenter seeks to fulfill. Current setup requires `aws.amazon.com/neuron: 8` which is half od `trn1.32xlarge` so expect two `trn1.xlarge` to be launched. 
+Note the three pending Jobs that Karpenter seeks to fulfill. Current setup requires `aws.amazon.com/neuron: 8` which is half of `trn1.32xlarge` so expect two `trn1.xlarge` to be launched. 
 * Deploy the Flux serving backend that loads the model from HuggingFace and uses the preloaded neuron model graph from S3 and standby for inference requests. The backend includes Deployment Pods and Services that route inference requests to the Pods so each model-api shapes scales horizontly.
 ```bash
 kubectl apply -f specs/flux-neuron-1024x576-model-api.yaml
 kubectl apply -f specs/flux-neuron-256x144-model-api.yaml
 kubectl apply -f specs/flux-neuron-512x512-model-api.yaml
 ```
-Note the three pending Deployment Pods that Karpenter seeks to fulfill. Current setup requires `aws.amazon.com/neuron: 8` which is half od `trn1.32xlarge` so expect two `trn1.xlarge` to be launched. 
+Note the three pending Deployment Pods that Karpenter seeks to fulfill. Current setup requires either `aws.amazon.com/neuron: 8` which is half od `trn1.32xlarge` or `aws.amazon.com/neuron: 6` which is a full `inf2.24xlarge` instance. 
 
 * Deploy the Flux serving frontend that includes Gradio app. 
 ```bash
@@ -76,4 +76,24 @@ flux-neuron   alb     *       flux-neuron-658286526.us-west-2.elb.amazonaws.com 
 ```
 
 Use [flux-neuron-658286526.us-west-2.elb.amazonaws.com/serve/](flux-neuron-658286526.us-west-2.elb.amazonaws.com/serve/)
+![Figure 1-Quality tests](./figures/flux-quality-test.png)
+*Figure 1-Quality tests after deploying the model on Inf2 instances (Similar results were shown on Trn1 instances)*
 
+We benchmarked the Flux serving latency on Trn1 and Inf2 by configuring the `nodeSelector` with the [Trn1 Karpenter nodepool](./specs/amd-neuron-trn1-nodepool.yaml) and the [Inf2 Karpenter nodepool](./specs/amd-neuron-inf2-nodepool.yaml) and launched the benchmark script [./app/benchmark-flux.py](./app/benchmark-flux.py) that is already executed post [compile job](./specs/compile-flux-256x144.yaml). Below are the results pulled by `kubectl logs ...`:
+```
+RESULT FOR flux1-dev-50runs with dim 1024x576 on amd-neuron-trn1;num_inference_steps:10: Latency P0=3118.2 Latency P50=3129.3 Latency P90=3141.3 Latency P95=3147.2 Latency P99=3162.2 Latency P100=3162.2
+
+RESULT FOR flux1-dev-50runs with dim 256x144 on amd-neuron-trn1;num_inference_steps:10: Latency P0=585.6 Latency P50=588.1 Latency P90=592.2 Latency P95=592.5 Latency P99=597.8 Latency P100=597.8
+
+RESULT FOR flux1-dev-50runs with dim 1024x576 on amd-neuron-inf2;num_inference_steps:10: Latency P0=9040.2 Latency P50=9080.8 Latency P90=9115.6 Latency P95=9120.6 Latency P99=9123.7 Latency P100=9123.7
+
+RESULT FOR flux1-dev-50runs with dim 256x144 on amd-neuron-inf2;num_inference_steps:10: Latency P0=3067.9 Latency P50=3075.7 Latency P90=3079.8 Latency P95=3081.2 Latency P99=3088.5 Latency P100=3088.5
+```
+
+| **Dimension** | **Platform** | **Latency P0** | **Latency P50** | **Latency P90** | **Latency P95** | **Latency P99** | **Latency P100** |
+|---------------|-------------:|---------------:|---------------:|---------------:|---------------:|---------------:|----------------:|
+| 1024x576      | Trn1        | 3118.2         | 3129.3         | 3141.3         | 3147.2         | 3162.2         | 3162.2          |
+| 256x144       | Trn1        | 585.6          | 588.1          | 592.2          | 592.5          | 597.8          | 597.8           |
+| 1024x576      | Inf2        | 9040.2         | 9080.8         | 9115.6         | 9120.6         | 9123.7         | 9123.7          |
+| 256x144       | Inf2        | 3067.9         | 3075.7         | 3079.8         | 3081.2         | 3088.5         | 3088.5          |
+*Table 1-Latency benchmark between 8 Trn1 NDs and 6 Inf2 NDs with 10 inference_steps for 50 iterations*
