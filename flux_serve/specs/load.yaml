@@ -24,7 +24,7 @@ spec:
           - -c
           - -x
           - |
-            SLEEP_TIME=10
+            SLEEP_TIME=2
             while true; do
               curl -X POST  -H "Content-Type: application/json" -d '{"prompt": "A majestic mountainscape in a surreal style","num_inference_steps": 10}' http://$FLUX_NEURON_256X144_MODEL_API_SERVICE_HOST:8000/generate
               sleep $SLEEP_TIME

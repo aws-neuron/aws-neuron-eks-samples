@@ -2,16 +2,14 @@
 
 [FLUX.1 dev](https://huggingface.co/black-forest-labs/FLUX.1-dev) is a 12 billion parameter rectified flow transformer capable of generating images from text. This example illustrates how to optimize its usage on Neuron devices that power EC2 Inferentia (Inf2) and Trainium (Trn1) instances deployed on EKS. Since the FLUX.1 dev model cannot fit on a single Neuron device, neuronx_distributed splits the model transformer into `N=8` chunks along a dimension. This ensures that each device holds only `1/N` chunk of the tensor. By performing partial chunk computation, the model generates partial outputs from all devices, maintaining accuracy and producing high-quality images. However, loading the traced model graph before serving significantly impacts the model loading time. This depends on the `tp_degree`, `N`, and the produced model graph traces `*.pt` need to be loaded during deployment and integrated into the OCI image, which can lead to prolonged load times. To address this, we cache the model traces (in the range of 10 GB) in [S3 Mountpoints](https://docs.aws.amazon.com/eks/latest/userguide/s3-csi.html), decoupling the OCI model load time from the model traces load time.
 
-Next, we determine the compute type we intend to use. The initial step involves loading the model, executing a single inference, and assessing the image quality based on the number of inference steps. Subsequently, we determine the minimum inference latency with `Trn1` and `Inf2` under the specified acceptable quality parameters, currently set to `num_inference_steps`. Finally, we load each deployment unit, such as Flux on Trn1 8 Neuron devices or Flux on Inf2 6 Neuron devices, until it reaches its breaking point where the latency exceeds the acceptable thresholds.
+Next, we determine the compute type we intend to use. The initial step involves loading the model, executing a single inference, and assessing the image quality based on the number of inference steps. Subsequently, we determine the minimum inference latency with `Trn1` and `Inf2` under the specified acceptable quality parameters, currently set to `num_inference_steps`. Finally, we load each deployment unit, such as Flux on Trn1 8 Neuron devices or Flux on Inf2 6 Neuron devices, until it reaches its breaking point where the latency exceeds the acceptable thresholds. We measure the Neuron cores utilization using the built-in [Neuron monitoring tools](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/general/monitoring-tools.html#monitoring-tools) that are included in Container Insights on Amazon EKS.
 
 The rest of this post offers a code sample walkthrough that explains the optimization strategies we adopted to streamline the deployment process using S3 CSI Driver and [Deep Learning Containers](https://github.com/aws/deep-learning-containers/blob/master/available_images.md). These strategies aim to reduce the cost of inference while enhancing model serving throughput. 
 
 
-TBD - https://awsdocs-neuron.readthedocs-hosted.com/en/latest/general/monitoring-tools.html#monitoring-tools are availible out of the box with container insights
-
-
 ## Walkthrough
 * [Create cluster with Karpenter node pools that provisions `trn1` instances](https://karpenter.sh/docs/getting-started/getting-started-with-karpenter/)
+* [Setup Container Insights on Amazon EKS and Kubernetes](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/Container-Insights-setup-EKS-quickstart.html)
 * [Deploy your HggingFace user secret as a k8s secret](https://kubernetes.io/docs/concepts/configuration/secret/)
 ```bash
 echo -n 'hf_myhftoken' | base64
