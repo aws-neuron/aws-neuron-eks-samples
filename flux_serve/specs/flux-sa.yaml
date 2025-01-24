@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flux-serviceaccount
+  namespace: default
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::920372998901:role/KarpenterNodeRole-flux-usw2

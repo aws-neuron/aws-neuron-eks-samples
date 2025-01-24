@@ -19,6 +19,7 @@ Samples are organized by use case below:
 | Link | Description | Instance Type |
 | --- | --- | --- |
 | [SD inference](sd_hf_serve) | SD Inference workflow for creating an inference endpoint forwarded by ALB LoadBalancer powered by Karpenter's NodePool | Inf2 |
+| [Flux inference](flux_serve) | FLUX.1 dev Inference workflow for creating an inference endpoint forwarded by ALB LoadBalancer powered by Karpenter's NodePool and S3 mountpoints | Trn1/Inf2 |
 
 ## Getting Help
 
