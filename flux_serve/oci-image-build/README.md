@@ -5,7 +5,7 @@
 ```bash
 export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --output text --query Account)
 export AWS_REGION=us-west-2
-export BASE_IMAGE_AMD_XLA_TAG=2.5.1-neuronx-py310-sdk2.21.0-ubuntu22.04
+export BASE_IMAGE_AMD_XLA_TAG=2.5.1-neuronx-py310-sdk2.22.0-ubuntu22.04
 export IMAGE_AMD_XLA_TAG=amd64-neuron
 export BASE_REPO=model
 export BASE_TAG=multiarch-ubuntu
