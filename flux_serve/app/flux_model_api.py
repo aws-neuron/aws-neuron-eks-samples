@@ -297,7 +297,7 @@ prompt= "A cat holding a sign that says hello world"
 num_inference_steps=10
 model_inputs={'prompt':prompt,'height':height,'width':width,'max_sequence_length':max_sequence_length,'num_inference_steps': num_inference_steps,'guidance_scale':guidance_scale}
 test_name=f"flux1-dev-50runs with dim {height}x{width} on {nodepool};num_inference_steps:{num_inference_steps}"
-benchmark(50,test_name,model,model_inputs)
+benchmark(10,test_name,model,model_inputs)
 
 # Define the image generation endpoint
 @app.post("/generate", response_model=GenerateImageResponse)
