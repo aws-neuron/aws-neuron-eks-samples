@@ -66,7 +66,7 @@ def ready():
     return {"message": "Service is ready"}
 
 with gr.Blocks() as interface:
-    gr.Markdown(f"# {model_id} Image Generation App")
+    gr.Markdown(f"# Image Generation App")
     gr.Markdown("Enter a prompt and specify the number of inference steps to generate images in different shapes.")
 
     with gr.Row():
