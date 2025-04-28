@@ -17,6 +17,7 @@ import base64
 from vllm import LLM, SamplingParams
 from sentence_transformers import SentenceTransformer
 import yaml
+from transformers import AutoConfig
 
 cw_namespace='hw-agnostic-infer'
 default_max_new_tokens=50
@@ -124,6 +125,11 @@ class GenerateBenchmarkResponse(BaseModel):
     report: str = Field(..., description="Benchmark report")
 
 def load_model():
+  model_id = vllm_config["model"]
+  config = AutoConfig.from_pretrained(model_id)
+  if config.rope_scaling is None:
+    config.rope_scaling = {"rope_type": "linear", "scaling_factor": 1.0}
+  vllm_config["model_config"] = config
   model = LLM(**vllm_config)
   return model
 
