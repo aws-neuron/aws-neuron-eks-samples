@@ -18,7 +18,7 @@ spec:
       nodeClassRef:
         group: karpenter.k8s.aws
         kind: EC2NodeClass
-        name: amd-neuron
+        name: amd-neuron-al2023
       expireAfter: 720h # 30 * 24h = 720h
   limits:
     cpu: 1000
@@ -29,20 +29,17 @@ spec:
 apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass
 metadata:
-  name: amd-neuron
+  name: amd-neuron-al2023
 spec:
-  amiFamily: AL2 # Amazon Linux 2
   amiSelectorTerms:
-    - id: "ami-0e73cfd34ee52b6a6"
-    - id: "ami-077b8064c2a1a3186"
-    - id: "ami-057dddc807f3f6644"
-  role: "KarpenterNodeRole-flux-usw2"
+    - alias: "al2023@v20250419"
+  role: "KarpenterNodeRole-cova"
   subnetSelectorTerms:
     - tags:
-        karpenter.sh/discovery: "flux-usw2"
+        karpenter.sh/discovery: "cova"
   securityGroupSelectorTerms:
     - tags:
-        karpenter.sh/discovery: "flux-usw2" 
+        karpenter.sh/discovery: "cova" 
   blockDeviceMappings:
     - deviceName: /dev/xvda
       ebs:
