@@ -130,3 +130,10 @@ with gr.Blocks() as interface:
 
 app = gr.mount_gradio_app(app, interface, path="/serve")
 
+@app.get("/health")
+def healthy():
+    return {"message": "Service is healthy"}
+
+@app.get("/readiness")
+def ready():
+    return {"message": "Service is ready"}
