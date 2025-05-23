@@ -17,7 +17,7 @@ metadata:
     alb.ingress.kubernetes.io/target-group-attributes: stickiness.enabled=true,stickiness.lb_cookie.duration_seconds=10
     alb.ingress.kubernetes.io/load-balancer-name: cova
     alb.ingress.kubernetes.io/actions.weighted-routing: >
-       {"type":"forward","forwardConfig":{"targetGroups":[{"serviceName":"flux-neuron-gradio","servicePort":8000,"weight":100}],"targetGroupStickinessConfig":{"enabled":true,"durationSeconds":200}}}
+       {"type":"forward","forwardConfig":{"targetGroups":[{"serviceName":"cova-gradio","servicePort":8000,"weight":100}],"targetGroupStickinessConfig":{"enabled":true,"durationSeconds":200}}}
   labels:          
     app: cova-neuron-gradio
 spec:

@@ -32,14 +32,14 @@ metadata:
   name: amd-neuron-al2023
 spec:
   amiSelectorTerms:
-    - alias: "al2023@v20250419"
-  role: "KarpenterNodeRole-cova"
+    - alias: "al2023@v20250501"
+  role: "KarpenterNodeRole-cova-use1"
   subnetSelectorTerms:
     - tags:
-        karpenter.sh/discovery: "cova"
+        karpenter.sh/discovery: "cova-use1"
   securityGroupSelectorTerms:
     - tags:
-        karpenter.sh/discovery: "cova" 
+        karpenter.sh/discovery: "cova-use1" 
   blockDeviceMappings:
     - deviceName: /dev/xvda
       ebs:

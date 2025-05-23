@@ -12,7 +12,8 @@ spec:
       schedulerName: my-scheduler
       containers:
       - name: app
-        image: 920372998901.dkr.ecr.us-west-2.amazonaws.com/model:amd64-neuron
+        #image: 891377065549.dkr.ecr.us-west-2.amazonaws.com/model:amd64-neuron
+        image: 920372998901.dkr.ecr.us-east-1.amazonaws.com/model:amd64-neuron
         imagePullPolicy: Always
         volumeMounts:
           - name: dshm
@@ -32,9 +33,9 @@ spec:
           while true; do sleep 3600; done
         resources:
           limits:
-            aws.amazon.com/neuron: 6
+            aws.amazon.com/neuron: 16
           requests: 
-            aws.amazon.com/neuron: 6
+            aws.amazon.com/neuron: 16
         env:
         - name: NODEPOOL
           value: "amd-neuron-trn1"

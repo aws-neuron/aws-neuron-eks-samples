@@ -29,9 +29,11 @@ spec:
       nodeSelector:
         karpenter.sh/nodepool: amd-neuron-inf2
       serviceAccountName: flux-serviceaccount
+      #serviceAccountName: appsimulator
       schedulerName: my-scheduler
       containers:
       - name: app
+        #image: 891377065549.dkr.ecr.us-west-2.amazonaws.com/model:amd64-neuron
         image: 920372998901.dkr.ecr.us-west-2.amazonaws.com/model:amd64-neuron
         imagePullPolicy: Always
         volumeMounts:
@@ -39,12 +41,22 @@ spec:
             mountPath: /dev/shm
           - name: s3-flux-pvc
             mountPath: /model
-        command: ["sh", "-c", "uvicorn flux_model_api:app --host=0.0.0.0"]
+        command:
+        - /bin/bash
+        - "-exc"
+        - |
+          set -x
+          pip install --upgrade pip
+          pip config set global.extra-index-url https://pip.repos.neuron.amazonaws.com
+          pip install --upgrade "neuronx-distributed==0.11.0" --extra-index-url https://pip.repos.neuron.amazonaws.com
+          pip install --upgrade "neuronx-distributed-inference>=0.2.0" --extra-index-url https://pip.repos.neuron.amazonaws.com
+          pip install --upgrade tenacity diffusers 
+          uvicorn flux_model_api:app --host=0.0.0.0
         resources:
           requests:
-            aws.amazon.com/neuron: 6
+            aws.amazon.com/neuron: 8
           limits:
-            aws.amazon.com/neuron: 6
+            aws.amazon.com/neuron: 8
         ports:
           - containerPort: 8000
             protocol: TCP
@@ -52,7 +64,7 @@ spec:
           httpGet:
             path: /readiness
             port: 8000
-          initialDelaySeconds: 60
+          initialDelaySeconds: 460
           periodSeconds: 10
         env:
         - name: APP

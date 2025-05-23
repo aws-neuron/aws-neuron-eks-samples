@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: s3-flux-pv
+  name: neuron-bits-use1-pv
 spec:
   capacity:
     storage: 1200Gi 
@@ -10,20 +10,19 @@ spec:
   storageClassName: "" 
   claimRef: 
     namespace: default 
-    name: s3-flux-pvc 
+    name: neuron-bits-use1-pvc 
   mountOptions:
-    - region=us-west-2
+    - region=us-east-1
   csi:
     driver: s3.csi.aws.com 
     volumeHandle: s3-csi-driver-volume
     volumeAttributes:
-      bucketName: flux1-dev-neuron2
-      #bucketName: flux1-dev-neuron
+      bucketName: neuron-bits-use1
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: s3-flux-pvc
+  name: neuron-bits-use1-pvc
 spec:
   accessModes:
     - ReadWriteMany # Supported options: ReadWriteMany / ReadOnlyMany
@@ -31,4 +30,4 @@ spec:
   resources:
     requests:
       storage: 1200Gi 
-  volumeName: s3-flux-pv 
+  volumeName: neuron-bits-use1-pv 
