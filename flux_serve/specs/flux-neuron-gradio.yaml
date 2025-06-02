@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: flux-neuron-gradio
+spec:
+  selector:
+    app: flux-neuron-gradio
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: flux-neuron-gradio
+  name: flux-neuron-gradio
+spec:
+  selector:
+    matchLabels:
+      app: flux-neuron-gradio
+  template:
+    metadata:
+      labels:
+        app: flux-neuron-gradio
+    spec:
+      nodeSelector:
+        alpha.eksctl.io/nodegroup-name: cova-ng
+      #serviceAccountName: appsimulator
+      containers:
+      - name: app
+        image: 920372998901.dkr.ecr.us-west-2.amazonaws.com/model:amd64-neuron
+        imagePullPolicy: Always
+        #command: ["sh", "-c", "while true; do sleep 3600; done"]
+        command: ["sh", "-c", "uvicorn cova_gradio:app --host=0.0.0.0"]
+        ports:
+          - containerPort: 8000
+            protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readiness
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name

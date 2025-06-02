@@ -1,0 +1,105 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: flux-neuron-512x512-model-api
+spec:
+  selector:
+    app: flux-neuron-512x512-model-api
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: flux-neuron-512x512-model-api
+  name: flux-neuron-512x512-model-api
+spec:
+  selector:
+    matchLabels:
+      app: flux-neuron-512x512-model-api
+  template:
+    metadata:
+      labels:
+        app: flux-neuron-512x512-model-api
+    spec:
+      nodeSelector:
+        karpenter.sh/nodepool: amd-neuron-inf2
+      serviceAccountName: flux-serviceaccount
+      #serviceAccountName: appsimulator
+      schedulerName: my-scheduler
+      containers:
+      - name: app
+        #image: 891377065549.dkr.ecr.us-west-2.amazonaws.com/model:amd64-neuron
+        image: 920372998901.dkr.ecr.us-west-2.amazonaws.com/model:amd64-neuron
+        imagePullPolicy: Always
+        volumeMounts:
+          - name: dshm
+            mountPath: /dev/shm
+          - name: s3-flux-pvc
+            mountPath: /model
+        command:
+        - /bin/bash
+        - "-exc"
+        - |
+          set -x
+          pip install --upgrade pip
+          pip config set global.extra-index-url https://pip.repos.neuron.amazonaws.com
+          pip install --upgrade "neuronx-distributed==0.11.0" --extra-index-url https://pip.repos.neuron.amazonaws.com
+          pip install --upgrade "neuronx-distributed-inference>=0.2.0" --extra-index-url https://pip.repos.neuron.amazonaws.com
+          pip install --upgrade tenacity diffusers 
+          uvicorn flux_model_api:app --host=0.0.0.0
+        resources:
+          requests:
+            aws.amazon.com/neuron: 8
+          limits:
+            aws.amazon.com/neuron: 8
+        ports:
+          - containerPort: 8000
+            protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readiness
+            port: 8000
+          initialDelaySeconds: 460
+          periodSeconds: 10
+        env:
+        - name: APP
+          value: "flux1.1-dev-512x512-inf2"
+        - name: NODEPOOL
+          value: "amd-neuron-inf2"
+        - name: DEVICE
+          value: "xla"
+        - name: MODEL_ID
+          value: "black-forest-labs/FLUX.1-dev"
+        - name: COMPILER_WORKDIR_ROOT
+          value: "/model/512x512"
+        - name: HEIGHT
+          value: "512"
+        - name: WIDTH
+          value: "512"
+        - name: MAX_SEQ_LEN
+          value: "32"
+        - name: GUIDANCE_SCALE
+          value: "3.5"
+        - name: HUGGINGFACE_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-secrets
+              key: HUGGINGFACE_TOKEN
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+      volumes:
+      - name: workdir
+        emptyDir: {}
+      - name: dshm
+        emptyDir:
+          medium: Memory
+      - name: s3-flux-pvc
+        persistentVolumeClaim:
+          claimName: s3-flux-pvc
