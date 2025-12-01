@@ -1,0 +1,182 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen-vllm-loadgen
+  labels:
+    app: qwen-vllm-loadgen
+spec:
+  replicas: 1          
+  selector:
+    matchLabels:
+      app: qwen-vllm-loadgen
+  template:
+    metadata:
+      labels:
+        app: qwen-vllm-loadgen
+    spec:
+      nodeSelector:
+        alpha.eksctl.io/nodegroup-name: yahav1-ng
+      containers:
+        - name: loadgen
+          image: python:3.11-slim
+          env:
+            - name: AWS_REGION
+              value: us-west-2              
+            - name: CW_NAMESPACE
+              value: qwen-vllm-loadgen
+            - name: SLEEP_SECONDS
+              value: "10"  
+            - name: SERVICES
+              value: "qwen-vllm-tp1.default.svc.cluster.local,qwen-vllm-tp2.default.svc.cluster.local,qwen-vllm-tp4.default.svc.cluster.local"
+            - name: MODELS
+              value: "/var/mdl/Qwen-06B-BS1-SL128-TP1,/var/mdl/Qwen-06B-BS1-SL128-TP2,/var/mdl/Qwen-06B-BS1-SL128-TP4"
+          command: ["sh", "-c"]
+          args:
+            - |
+
+              apt-get update >/dev/null 2>&1 && apt-get install -y curl >/dev/null 2>&1
+              pip install --no-cache-dir boto3
+
+              python3 - << 'EOF'
+              import os
+              import time
+              import json
+              import subprocess
+              import datetime
+
+              import boto3
+
+              # --- Config from env ---
+              services = os.environ.get("SERVICES", "").split(",")
+              models = os.environ.get("MODELS", "").split(",")
+              sleep_seconds = float(os.environ.get("SLEEP_SECONDS", "5"))
+              cw_namespace = os.environ.get("CW_NAMESPACE", "QwenVLLM/LoadTest")
+              aws_region = os.environ.get("AWS_REGION", "us-west-2")
+              pod_name = os.environ.get("HOSTNAME", "unknown-pod")
+
+              # Ensure lists line up
+              pairs = list(zip(services, models))
+
+              # Prompt <= 128 characters
+              prompt = (
+                  "San Francisco is a coastal California city known for hills, bridges, fog, "
+                  "diverse neighborhoods, and tech culture."
+              )  # 114 chars
+
+              cw = boto3.client("cloudwatch", region_name=aws_region)
+
+              def send_metrics(ttft_ms, total_ms, success, service, model):
+                  """Publish TTFT_ms, TotalLatency_ms, and RPS to CloudWatch."""
+                  ts = datetime.datetime.utcnow()
+                  base_dims = [
+                      {"Name": "Model", "Value": model},
+                  ]
+
+                  metric_data = []
+                  '''
+                  if ttft_ms is not None:
+                      metric_data.append({
+                          "MetricName": "TTFT_ms",
+                          "Dimensions": base_dims,
+                          "Unit": "Milliseconds",
+                          "Value": ttft_ms,
+                          "Timestamp": ts,
+                      })
+                  '''
+                  if total_ms is not None:
+                      metric_data.append({
+                          "MetricName": "TotalLatency_ms",
+                          "Dimensions": base_dims,
+                          "Unit": "Milliseconds",
+                          "Value": total_ms,
+                          "Timestamp": ts,
+                      })
+
+                  # RPS metric with Status dimension (Success / Error)
+                  rps_dims = base_dims + [
+                      {
+                          "Name": "Status",
+                          "Value": "Success" if success else "Error",
+                      }
+                  ]
+                  metric_data.append({
+                      "MetricName": "RPS",
+                      "Dimensions": rps_dims,
+                      "Unit": "Count",
+                      "Value": 1.0,
+                      "Timestamp": ts,
+                  })
+
+                  try:
+                      cw.put_metric_data(
+                          Namespace=cw_namespace,
+                          MetricData=metric_data,
+                      )
+                  except Exception as e:
+                      # Don't crash the pod on CW errors; just log to stdout
+                      print(f"[CW ERROR] {e}", flush=True)
+
+              while True:
+                  for service, model in pairs:
+                      if not service or not model:
+                          continue
+
+                      url = f"http://{service}:8000/v1/completions"
+                      body = {
+                          "model": model,
+                          "prompt": prompt,
+                          "max_tokens": 50,
+                          "temperature": 1,
+                      }
+
+                      cmd = [
+                          "curl", "-sS",
+                          "--max-time", "20",
+                          "--connect-timeout", "3",
+                          "-w", "%{http_code} %{time_starttransfer} %{time_total}",
+                          "-o", "/tmp/resp.json",
+                          "-H", "Content-Type: application/json",
+                          "-d", json.dumps(body),
+                          url,
+                      ]
+
+                      try:
+                          proc = subprocess.run(
+                              cmd,
+                              capture_output=True,
+                              text=True,
+                              timeout=20,
+                          )
+                          out = proc.stdout.strip()
+                          parts = out.split()
+
+                          # If curl failed hard or output is malformed, count as error
+                          if proc.returncode != 0 or len(parts) != 3:
+                              print(f"[ERROR] curl failed: rc={proc.returncode}, out='{out}', err='{proc.stderr}'", flush=True)
+                              send_metrics(None, None, False, service, model)
+                              continue
+
+                          status_code = int(parts[0])
+                          ttft_s = float(parts[1])
+                          total_s = float(parts[2])
+
+                          ttft_ms = ttft_s * 1000.0
+                          total_ms = total_s * 1000.0
+
+                          success = 200 <= status_code < 400
+
+                          print(
+                              f"[RESULT] svc={service} model={model} "
+                              f"status={status_code} ttft_ms={ttft_ms:.2f} total_ms={total_ms:.2f} "
+                              f"success={success}",
+                              flush=True,
+                          )
+
+                          send_metrics(ttft_ms, total_ms, success, service, model)
+
+                      except Exception as e:
+                          print(f"[EXCEPTION] {e}", flush=True)
+                          send_metrics(None, None, False, service, model)
+
+                  time.sleep(sleep_seconds)
+              EOF

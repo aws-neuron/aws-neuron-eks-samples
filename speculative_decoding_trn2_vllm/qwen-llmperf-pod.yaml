@@ -1,0 +1,156 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: qwen-llmperf
+  namespace: default
+spec:
+  serviceAccountName: sd-llmperf
+  restartPolicy: Never
+  containers:
+    - name: app
+      image: python:3.10-slim
+      command:
+        - /bin/bash
+        - "-lc"
+        - |
+          set -e
+
+          apt-get update
+          apt-get install -y git curl jq ca-certificates awscli
+
+          cd /opt
+          git clone https://github.com/ray-project/llmperf.git
+          cd llmperf
+          pip install -e .
+
+          export OPENAI_API_KEY=dummy
+
+          ENDPOINT_SD="http://qwen-sd-vllm.default.svc.cluster.local:8000/v1"
+          ENDPOINT_BASE="http://qwen-vllm.default.svc.cluster.local:8000/v1"
+
+          curl "${ENDPOINT_SD}/models" || echo "qwen-sd-vllm models endpoint failed"
+          curl "${ENDPOINT_BASE}/models" || echo "qwen-vllm models endpoint failed"
+
+          BENCH_ARGS=(
+            --model Qwen/Qwen3-32B
+            --mean-input-tokens 64
+            --stddev-input-tokens 0
+            --mean-output-tokens 600
+            --stddev-output-tokens 0
+            --max-num-completed-requests 8
+            --timeout 1200
+            --num-concurrent-requests 4
+            --llm-api openai
+            --additional-sampling-params '{"temperature": 0.0}'
+          )
+
+          mkdir -p /tmp/results
+
+          TEST_CASES=(
+            "counting numbers from 1 "
+            "__SHAKESPEARE__"
+            "a"
+            "hello world "
+            "the cat sat on the mat. "
+            "Output valid JSON with fixed keys"
+            "Write a simple Python function skeleton"
+            "List numbers from one to twenty"
+          )
+
+          while true; do
+
+            for PROMPT in "${TEST_CASES[@]}"; do
+              echo ""
+              echo "===== TEST CASE: \"${PROMPT}\" ====="
+
+              if [ "$PROMPT" = "__SHAKESPEARE__" ]; then
+                git checkout -- src/llmperf/sonnet.txt
+              else
+                yes "${PROMPT}" | head -n 500 > src/llmperf/sonnet.txt
+              fi
+
+              rm -rf /tmp/results/*
+              mkdir -p /tmp/results/qwen-sd /tmp/results/qwen-base
+
+              (
+                export OPENAI_API_BASE="${ENDPOINT_SD}"
+                python token_benchmark_ray.py \
+                  "${BENCH_ARGS[@]}" \
+                  --results-dir /tmp/results/qwen-sd
+              ) &
+
+              (
+                export OPENAI_API_BASE="${ENDPOINT_BASE}"
+                python token_benchmark_ray.py \
+                  "${BENCH_ARGS[@]}" \
+                  --results-dir /tmp/results/qwen-base
+              ) &
+
+              wait
+
+              if ! ls /tmp/results/qwen-sd/*individual_responses.json >/dev/null 2>&1 || \
+                 ! ls /tmp/results/qwen-base/*individual_responses.json >/dev/null 2>&1; then
+                echo "Missing individual_responses.json; skipping this iteration."
+                sleep 5
+                continue
+              fi
+
+              SD=$(jq '
+                [.[].ttft_s] | sort | .[length*0.5|floor]
+              ' /tmp/results/qwen-sd/*individual_responses.json)
+
+              BASE=$(jq '
+                [.[].ttft_s] | sort | .[length*0.5|floor]
+              ' /tmp/results/qwen-base/*individual_responses.json)
+
+              IT_SD=$(jq '
+                [.[].inter_token_latency_s] | sort | .[length*0.5|floor]
+              ' /tmp/results/qwen-sd/*individual_responses.json)
+
+              IT_BASE=$(jq '
+                [.[].inter_token_latency_s] | sort | .[length*0.5|floor]
+              ' /tmp/results/qwen-base/*individual_responses.json)
+
+              E2E_SD=$(jq '[.[].end_to_end_latency_s] | sort | .[length*0.5|floor]' \
+                        /tmp/results/qwen-sd/*individual_responses.json)
+              E2E_BASE=$(jq '[.[].end_to_end_latency_s] | sort | .[length*0.5|floor]' \
+                          /tmp/results/qwen-base/*individual_responses.json)
+
+              THRU_SD=$(jq '[.[].request_output_throughput_token_per_s] | sort | .[length*0.5|floor]' \
+                        /tmp/results/qwen-sd/*individual_responses.json)
+              THRU_BASE=$(jq '[.[].request_output_throughput_token_per_s] | sort | .[length*0.5|floor]' \
+                          /tmp/results/qwen-base/*individual_responses.json)
+
+
+              IN_SD=$(jq '[.[].number_input_tokens]  | sort | .[length*0.5|floor]' /tmp/results/qwen-sd/*individual_responses.json)
+              OUT_SD=$(jq '[.[].number_output_tokens] | sort | .[length*0.5|floor]' /tmp/results/qwen-sd/*individual_responses.json)
+
+              IN_BASE=$(jq '[.[].number_input_tokens]  | sort | .[length*0.5|floor]' /tmp/results/qwen-base/*individual_responses.json)
+              OUT_BASE=$(jq '[.[].number_output_tokens] | sort | .[length*0.5|floor]' /tmp/results/qwen-base/*individual_responses.json)
+
+              PROMPT_DIM=$(echo "$PROMPT" | tr ' ' '_')
+
+              aws cloudwatch put-metric-data --namespace "Qwen/LLMPerf" --metric-data \
+              "MetricName=TTFT,Dimensions=[{Name=Variant,Value=SD},{Name=TestCase,Value=${PROMPT_DIM}}],Unit=Seconds,Value=${SD}" \
+              "MetricName=TTFT,Dimensions=[{Name=Variant,Value=Base},{Name=TestCase,Value=${PROMPT_DIM}}],Unit=Seconds,Value=${BASE}" \
+              "MetricName=InterTokenLatency,Dimensions=[{Name=Variant,Value=SD},{Name=TestCase,Value=${PROMPT_DIM}}],Unit=Seconds,Value=${IT_SD}" \
+              "MetricName=InterTokenLatency,Dimensions=[{Name=Variant,Value=Base},{Name=TestCase,Value=${PROMPT_DIM}}],Unit=Seconds,Value=${IT_BASE}" \
+              "MetricName=InputTokens,Dimensions=[{Name=Variant,Value=SD},{Name=TestCase,Value=${PROMPT_DIM}}],Unit=Count,Value=${IN_SD}" \
+              "MetricName=InputTokens,Dimensions=[{Name=Variant,Value=Base},{Name=TestCase,Value=${PROMPT_DIM}}],Unit=Count,Value=${IN_BASE}" \
+              "MetricName=OutputTokens,Dimensions=[{Name=Variant,Value=SD},{Name=TestCase,Value=${PROMPT_DIM}}],Unit=Count,Value=${OUT_SD}" \
+              "MetricName=OutputTokens,Dimensions=[{Name=Variant,Value=Base},{Name=TestCase,Value=${PROMPT_DIM}}],Unit=Count,Value=${OUT_BASE}" \
+              "MetricName=EndToEndLatency,Dimensions=[{Name=Variant,Value=SD},{Name=TestCase,Value=${PROMPT_DIM}}],Unit=Seconds,Value=${E2E_SD}" \
+              "MetricName=EndToEndLatency,Dimensions=[{Name=Variant,Value=Base},{Name=TestCase,Value=${PROMPT_DIM}}],Unit=Seconds,Value=${E2E_BASE}" \
+              "MetricName=RequestOutputThroughput,Dimensions=[{Name=Variant,Value=SD},{Name=TestCase,Value=${PROMPT_DIM}}],Unit=Count/Second,Value=${THRU_SD}" \
+              "MetricName=RequestOutputThroughput,Dimensions=[{Name=Variant,Value=Base},{Name=TestCase,Value=${PROMPT_DIM}}],Unit=Count/Second,Value=${THRU_BASE}" 
+
+              echo "PCTL  | itt_s | ttft_s | e2e_s | thru_tok_s | input_tokens | output_tokens"
+              echo "-----------------------------------------------------------------------------"
+              echo "p50   | ${IT_SD}/${IT_BASE} | ${SD}/${BASE} | ${E2E_SD}/${E2E_BASE} | ${THRU_SD}/${THRU_BASE} | ${IN_SD}/${IN_BASE} | ${OUT_SD}/${OUT_BASE}"
+
+            done
+
+            sleep 5
+
+          done
+
