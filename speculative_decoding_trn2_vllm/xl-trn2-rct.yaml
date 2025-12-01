@@ -1,0 +1,27 @@
+apiVersion: resource.k8s.io/v1beta1
+kind: ResourceClaimTemplate
+metadata:
+  name: xl-trn2
+spec:
+  spec:
+    devices:
+      constraints:
+      - matchAttribute: resource.aws.com/devicegroup8_id
+        requests:
+        - neurons
+      requests:
+      - allocationMode: ExactCount
+        count: 8
+        deviceClassName: neuron.aws.com
+        name: neurons
+        selectors:
+        - cel:
+            expression: device.attributes['neuron.aws.com'].instanceType == 'trn2.48xlarge'
+      config:
+      - requests: ["neurons"]
+        opaque:
+          driver: neuron.aws.com
+          parameters:
+            apiVersion: neuron.aws.com/v1alphav1
+            kind: NeuronConfig
+            logicalNeuronCore: 2

@@ -20,6 +20,8 @@ Samples are organized by use case below:
 | --- | --- | --- |
 | [SD inference](sd_hf_serve) | SD Inference workflow for creating an inference endpoint forwarded by ALB LoadBalancer powered by Karpenter's NodePool | Inf2 |
 | [Flux inference](flux_serve) | FLUX.1 dev Inference workflow for creating an inference endpoint forwarded by ALB LoadBalancer powered by Karpenter's NodePool and S3 mountpoints | Trn1/Inf2 |
+| [Optimal TP/DP for LLM serving](tp_dp_trn2_vllm) | Demonstrates optimal tensor parallelism configuration for LLM serving with vLLM, comparing TP1, TP2, and TP4 performance on Qwen models | Trn2 |
+| [Speculative decoding](speculative_decoding_trn2_vllm) | Accelerate LLM inference using speculative decoding with vLLM, comparing baseline vs draft model performance with Neuron DRA and S3 persistence | Trn2 |
 
 ## Getting Help
 
