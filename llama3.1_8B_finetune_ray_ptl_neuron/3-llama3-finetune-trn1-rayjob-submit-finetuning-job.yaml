@@ -15,14 +15,29 @@
 apiVersion: ray.io/v1
 kind: RayJob
 metadata:
-  name: 3-llama3-finetune-trn1-rayjob-submit-finetuning-job
+  name: trn1-rayjob-submit-finetuning-job-1
 spec:
   submissionMode: K8sJobMode
-  entrypoint: "NEURON_NUM_DEVICES=32 bash tp_zero1_llama3_8b_hf_finetune_ptl.sh"
+  # entrypoint: "NEURON_NUM_DEVICES=32 bash tp_zero1_llama3_8b_hf_finetune_ptl.sh"
+  entrypoint: "bash tp_zero1_llama3_8b_hf_finetune_ptl.sh"
+  entrypointNumCpus: 1
   runtimeEnvYAML: |
     working_dir: /llama3_finetune
   clusterSelector:
     ray.io/cluster: kuberay-trn1
-    rayClusterNamespace: default  # Replace with the namespace where your RayCluster is deployed
   shutdownAfterJobFinishes: true
   ttlSecondsAfterFinished: 60  # Time to live for the pod after completion (in seconds)
+  submitterPodTemplate:
+    spec:
+      # Add the nodeSelector field here in the Pod spec
+      nodeSelector:
+        # Key-value pair matching the label on your target node(s)
+        node.kubernetes.io/instance-type: trn1.32xlarge
+      containers:
+      - name: ray-job-submitter
+        image: <AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/kuberay_trn1_llama3.1_pytorch2:latest
+      restartPolicy: Never
+      tolerations:
+        - key: "aws.amazon.com/neuron"
+          operator: "Exists"
+          effect: "NoSchedule"

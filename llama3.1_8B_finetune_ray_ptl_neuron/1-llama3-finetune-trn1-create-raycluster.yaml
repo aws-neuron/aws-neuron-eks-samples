@@ -33,7 +33,7 @@ metadata:
     ray.io/scheduler-name: volcano
     volcano.sh/queue-name: llama3-training-queue
 spec:
-  rayVersion: 2.22.0
+  rayVersion: 2.52.1
   headGroupSpec:
     # Head Node Configuration
     # This section defines the specification for the Ray head pod.
@@ -67,9 +67,6 @@ spec:
                 mountPath: /shared
         # Node Selector for Karpenter
         # Karpenter will provision this head pod on a node with the specified labels.
-        nodeSelector:
-          instanceType: mixed-x86
-          provisionerType: Karpenter
         volumes:
           - name: log-volume
             emptyDir: {}
@@ -78,6 +75,7 @@ spec:
               claimName: fsx-claim   # Reference the PVC for shared storage
     rayStartParams:
       dashboard-host: 0.0.0.0    # Make dashboard accessible
+      num-cpus: "0"
 
   workerGroupSpecs:
     # Worker Node Configuration

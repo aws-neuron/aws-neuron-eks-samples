@@ -1,8 +1,7 @@
 ARG REGION
 
 # Base image: PyTorch training image for NeuronX
-#FROM public.ecr.aws/neuron/pytorch-training-neuronx:2.1.2-neuronx-py310-sdk2.19.1-ubuntu20.04
-FROM public.ecr.aws/neuron/pytorch-training-neuronx:2.1.2-neuronx-py310-sdk2.20.0-ubuntu20.04
+FROM public.ecr.aws/neuron/pytorch-training-neuronx:2.8.0-neuronx-py311-sdk2.26.1-ubuntu22.04
 
 # Install Ray for distributed computing
 RUN pip3 install aiohttp \
@@ -17,7 +16,7 @@ RUN pip3 install wget awscli regex boto3 pyarrow \
 COPY ./llama3_finetune /llama3_finetune
 
 # Make shell scripts executable
-RUN chmod +x /llama3_finetune/tp_zero1_llama3_8b_hf_finetune_ptl.sh 
+RUN chmod +x /llama3_finetune/*.sh
 
 # Set the working directory
 WORKDIR /llama3_finetune
@@ -27,6 +26,3 @@ RUN pip install -r requirements.txt --extra-index-url https://pip.repos.neuron.a
 
 # Installing the requirements 
 RUN pip install transformers==4.32.1 --no-warn-conflicts
-
-# Installing neuronx-cc 2.0+
-RUN pip install neuronx-cc==2.* --extra-index-url https://pip.repos.neuron.amazonaws.com -U

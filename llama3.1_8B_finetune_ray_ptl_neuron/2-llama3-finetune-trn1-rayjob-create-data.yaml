@@ -15,20 +15,28 @@
 apiVersion: ray.io/v1
 kind: RayJob
 metadata:
-  name: 2-llama3-finetune-trn1-rayjob-create-data
-  namespace: default
+  name: trn1-rayjob-create-data
 spec:
   submissionMode: K8sJobMode
-  entrypoint: "mkdir -p /shared/llama-3.1 && python3 download_llama.py && mkdir -p /shared/Meta-Llama-3.1-8B/pretrained_weight && python3 convert_checkpoints.py --tp_size 8 --convert_from_full_state --config ./config.json --input_dir /shared/llama3.1-8b-hf-pretrained.pt --output_dir /shared/Meta-Llama-3.1-8B/pretrained_weight/"
+  entrypoint: "bash download_llama_and_dolly.sh"
+  entrypointNumCpus: 1
   runtimeEnvYAML: |
     working_dir: /llama3_finetune
     env_vars:
       PYTHONUNBUFFERED: '0'
-    resources:
-      requests:
-        cpu: "6"
-        memory: "30Gi"
   clusterSelector:
     ray.io/cluster: kuberay-trn1
-    rayClusterNamespace: default  # Replace with the namespace where your RayCluster is deployed
-  ttlSecondsAfterFinished: 60  # Time to live for the pod after completion (in seconds)
+  submitterPodTemplate:
+    spec:
+      # Add the nodeSelector field here in the Pod spec
+      nodeSelector:
+        # Key-value pair matching the label on your target node(s)
+        node.kubernetes.io/instance-type: trn1.32xlarge
+      containers:
+      - name: ray-job-submitter
+        image: <AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/kuberay_trn1_llama3.1_pytorch2:latest
+      restartPolicy: Never
+      tolerations:
+        - key: "aws.amazon.com/neuron"
+          operator: "Exists"
+          effect: "NoSchedule"

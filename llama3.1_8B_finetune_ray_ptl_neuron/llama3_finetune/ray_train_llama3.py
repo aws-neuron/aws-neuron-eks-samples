@@ -49,7 +49,7 @@ if __name__ == "__main__":
         "NEURON_RT_STOCHASTIC_ROUNDING_EN": "1",
         "MALLOC_ARENA_MAX": "64",
         "CCOM_SOCKET_IFNAME": "eth0",
-        "NEURON_COMPILE_CACHE_URL": "/shared/neuron_cache",
+        "NEURON_COMPILE_CACHE_URL": "/shared/trn1_llama_kuberay/neuron_cache",
         # These were usually set inside a slurm script, I don't yet know the significance or relevance/need of these variables
         "NUM_NEURONCORES":num_cores_per_node_env_value,
         "NEURON_RT_NUM_CORES":num_cores_per_node_env_value,

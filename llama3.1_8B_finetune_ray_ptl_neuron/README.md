@@ -1,10 +1,10 @@
-# Instructions for fine-tuning LLama3.1 on AWS Trainium using Ray + Pytorch Lightning + Neuron
+# Instructions for fine-tuning LLama3.1 on AWS Trainium using Ray + Pytorch Lightning + AWS Neuron
 
 ## Overview <a name="overview2"></a>
 
-This tutorial shows how to launch a Ray + PTL +  Neuron training job on multiple Trn1 nodes within an Amazon Elastic Kubernetes Service (EKS) cluster. In this example, the [Llama3.1 8B](https://huggingface.co/NousResearch/Meta-Llama-3.1-8B) model will undergo fine-tuning using the opensource dataset: [Hugging face databricks/databricks-dolly-15k](https://huggingface.co/datasets/databricks/databricks-dolly-15k). Ray will be used to launch the job on 2 trn1.32xlarge (or trn1n.32xlarge) instances, with 32 cores per instance.
+This tutorial shows how to launch a Ray + PyTorch Lightning + AWS Neuron training job on multiple Trn1 nodes within an Amazon Elastic Kubernetes Service (EKS) cluster. In this example, the [Llama3.1 8B](https://huggingface.co/NousResearch/Meta-Llama-3.1-8B) model will undergo fine-tuning using the opensource dataset: [Hugging face databricks/databricks-dolly-15k](https://huggingface.co/datasets/databricks/databricks-dolly-15k). Ray will be used to launch the job on 2 trn1.32xlarge (or trn1n.32xlarge) instances, with 32 NeuronCores per instance.
 
-### What are Ray, PTL and Neuron?
+### What are Ray, PyTorch Lightning, and AWS Neuron?
 
 [PyTorch Lightning](https://lightning.ai/docs/pytorch/stable/starter/introduction.html) developed by Lightning AI organization, is a library that provides a high-level interface for PyTorch, and helps you organize your code and reduce boilerplate. By abstracting away engineering code, it makes deep learning experiments easier to reproduce and improves developer productivity.
 
@@ -12,7 +12,7 @@ This tutorial shows how to launch a Ray + PTL +  Neuron training job on multiple
 
 [AWS Neuron](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/) is an SDK with a compiler, runtime, and profiling tools that unlocks high-performance and cost-effective deep learning (DL) acceleration. It supports high-performance training on AWS Trainium instances. For model deployment, it supports high-performance and low-latency inference on AWS Inferentia.
 
-### Combining Ray + PTL + Neuron:
+### Combining Ray + PyTorch Lightning + AWS Neuron:
 The integration of Ray, PyTorch Lightning (PTL), and AWS Neuron combines PTL's intuitive model development API, Ray Train's robust distributed computing capabilities for seamless scaling across multiple nodes, and AWS Neuron's hardware optimization for Trainium, significantly simplifying the setup and management of distributed training environments for large-scale AI projects, particularly those involving computationally intensive tasks like large language models.
 
 The tutorial covers all steps required to prepare the EKS environment and launch the training job:
@@ -25,9 +25,8 @@ The tutorial covers all steps required to prepare the EKS environment and launch
  6. [Monitoring Jobs](#viewingraydashboard)
  7. [Fine-tuning Model](#finetuningmodel)
  8. [Deleting the environment](#cleanup)
- 9. [Troubleshooting](#troubleshooting)
 
-# Multi-Node Ray + PTL + Neuron Flow
+# Multi-Node Ray + PyTorch Lightning + Neuron Flow
 
 ![Architecture Diagram](images/rayptlneuron-architecture.png)
 
@@ -90,10 +89,10 @@ Before we begin, ensure you have all the prerequisites in place to make the depl
 <b>Automation for Pre-requisities:</b><br/>
 To install all the pre-reqs above on the jump host, you can run this [script](https://github.com/awslabs/data-on-eks/blob/main/ai-ml/trainium-inferentia/examples/llama2/install-pre-requsites-for-ec2.sh) which is compatible with Amazon Linux 2023.
 
-### 2.2 Clone the Data on EKS repository
+### 2.2 Clone the AI on EKS repository
 ```
 cd ~
-git clone https://github.com/awslabs/data-on-eks.git
+git clone https://github.com/awslabs/ai-on-eks.git
 ```
 
 ### 2.3 Setup EKS Cluster
@@ -101,24 +100,14 @@ git clone https://github.com/awslabs/data-on-eks.git
 Navigate to the trainium-inferentia directory:
 
 ```
-cd data-on-eks/ai-ml/trainium-inferentia
+cd ai-on-eks/infra/trainium-inferentia
 ```
 
-Let's run the below export commands to set environment variables.
+Let's run the below export command to set environment variables.
 
 ```
-# Enable FSx for Lustre, which will mount fine-tuning data to all pods across multiple nodes
-export TF_VAR_enable_fsx_for_lustre=true
-
 # Set the region according to your requirements. Check Trn1 instance availability in the specified region.
 export TF_VAR_region=us-east-2
-
-# Enable Volcano custom scheduler with KubeRay Operator
-export TF_VAR_enable_volcano=true
-
-# Note: This configuration will create two new Trn1 32xl instances. Ensure you validate the associated costs before proceeding. You can change the number of instances here.
-export TF_VAR_trn1_32xl_min_size=2
-export TF_VAR_trn1_32xl_desired_size=2
 ```
 
 Run the installation script to provision an EKS cluster with all the add-ons needed for the solution.
@@ -197,8 +186,8 @@ Update the `<AWS_ACCOUNT_ID>` and `<REGION>` fields in the `1-llama3-finetune-tr
 <pre style="background: black; color: #ddd">
 bash> export AWS_ACCOUNT_ID=&lt;enter_your_aws_account_id&gt; # for ex: 111222333444
 bash> export REGION=&lt;enter_your_aws_region&gt; # for ex: us-east-2
-bash> sed -i "s/&lt;AWS_ACCOUNT_ID&gt;/$AWS_ACCOUNT_ID/g" 1-llama3-finetune-trn1-create-raycluster.yaml
-bash> sed -i "s/&lt;REGION&gt;/$REGION/g" 1-llama3-finetune-trn1-create-raycluster.yaml
+bash> sed -i "s/&lt;AWS_ACCOUNT_ID&gt;/$AWS_ACCOUNT_ID/g" *.yaml
+bash> sed -i "s/&lt;REGION&gt;/$REGION/g" *.yaml
 </pre>
 
 Use the command below to create Ray cluster:
@@ -248,9 +237,7 @@ Use the command below to submit a Ray job for fine-tuning the model:
 kubectl apply -f 3-llama3-finetune-trn1-rayjob-submit-finetuning-job.yaml
 </pre>
 
-<b> Known Issues:</b> If the Ray job fails with punkt or division by zero errors, see the [Troubleshooting](#troubleshooting) section below. 
-
-Model artifacts will be created under `/shared/neuron_compile_cache/`. Check the Ray logs for “Training Completed” message.
+Model artifacts will be created under `/shared/trn1_llama_kuberay/neuron_cache`. Check the Ray logs for “Training Completed” message.
 
 ## 8. Clean-up <a name="cleanup"></a>
 
@@ -276,38 +263,8 @@ Terminate your EC2 jump host instance
 Delete the eks_tutorial IAM user via the AWS Console.
 ```
 
-## 9. Troubleshooting<a name="troubleshooting"></a>
-
-<b>Known Issues:</b>
-
-<b>If the job fails with the Errors below: </b>
-
-<pre style="background: black; color: #ddd">
-[36m(RayTrainWorker pid=3462, ip=100.64.83.225)[0m [nltk_data] '/root/nltk_data/tokenizers/punkt_tab.zip'
-[36m(RayTrainWorker pid=3464, ip=100.64.83.225)[0m [nltk_data] Error with downloaded zip file
-[36m(RayTrainWorker pid=3483, ip=100.64.83.225)[0m Bad CRC-32 for file 'punkt_tab/czech/ortho_context.tab'
-</pre>
-
-<pre style="background: black; color: #ddd">
-File "/tmp/ray/session_2024-11-13_06-40-30_347972_17/runtime_resources/working_dir_files/_ray_pkg_5ad2ee50e13a7e91/ray_neuron_xla_config_20.py", line 20, in _set_xla_env_vars
-"GROUP_WORLD_SIZE": str(context.get_world_size() / local_world_size),
-ZeroDivisionError: division by zero
-</pre>
-
-<b>Workaround:</b>
-If your Ray fine-tuning job fails with errors associated with `punkt` or `division by zero`, delete the Ray job using the commands below, wait for 5 min and re-run it. If the job fails again, wait for 5 more min and re-run the second time.  
-
-<pre style="background: black; color: #ddd">
-kubectl delete -f 3-llama3-finetune-trn1-rayjob-submit-finetuning-job.yaml
-kubectl apply -f 3-llama3-finetune-trn1-rayjob-submit-finetuning-job.yaml
-</pre>
-
-If you still face issues, reach out to us via the [documentation](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/general/contact.html). To report any bugs, raise an issue via the GitHub Issues feature.
-
-<b>Probable Cause:</b>
-[Punkt](https://www.nltk.org/api/nltk.tokenize.punkt.html) is a tokenizer used in Natural Language Processing (NLP) that is part of the NLTK (Natural Language Toolkit) library in Python. These errors above seem to be associated with the code trying to use Punkt libraries before they have completely downloaded. We are actively investigating this issue. Till then, follow the workaround above.
-
 ## Contributors<a name="contributors"></a>
 Pradeep Kadubandi - AWS ML Engineer<br/>
 Chakra Nagarajan - AWS Principal Specialist SA - Accelerated Computing<br/>
 Sindhura Palakodety - AWS Senior ISV Generative AI Solutions Architect<br/>
+Scott Perry - AWS Principal SA - Annapurna Labs<br/>

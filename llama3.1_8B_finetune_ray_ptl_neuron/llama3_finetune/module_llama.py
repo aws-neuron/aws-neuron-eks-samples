@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch_xla.core.xla_model as xm
+import torch_xla.runtime as xr
 from modeling_llama_nxd import LlamaForCausalLM
 from training_utils import Throughput, get_sin_cos_matrix
 from transformers import GenerationConfig
@@ -50,9 +51,11 @@ class NeuronLlamaLTModule(NeuronLTModule):
                 print(f"model config {model_config}")
             return model
 
+        include_buffers = True
         self.model = initialize_parallel_model(
             self.nxd_config,
             get_model,
+            include_buffers,
             *self.model_args,
             **self.model_kwargs,
         )
@@ -175,7 +178,7 @@ class NeuronLlamaLTModule(NeuronLTModule):
         ):
             if self.should_print:
                 print(
-                    f"step {self.global_step} loss is {self.loss.detach().cpu().item()}, lr is {self.lr}, throughput {self.tps} seq/s,  input_ids {torch.sum(self.input_ids.detach().cpu()).item()}, norm {self.global_norm}, global rank {xm.get_ordinal()}"
+                    f"step {self.global_step} loss is {self.loss.detach().cpu().item()}, lr is {self.lr}, throughput {self.tps} seq/s,  input_ids {torch.sum(self.input_ids.detach().cpu()).item()}, norm {self.global_norm}, global rank {xr.global_ordinal()}"
                 )
 
         # # Logging, need to revisit when automatic_optimization enabled

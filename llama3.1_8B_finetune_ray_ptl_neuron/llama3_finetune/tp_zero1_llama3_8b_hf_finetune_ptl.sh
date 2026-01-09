@@ -5,7 +5,7 @@
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-export NEURON_CC_FLAGS="--model-type=transformer --distribution-strategy=llm-training --cache_dir=/shared/neuron_compile_cache/"
+export NEURON_CC_FLAGS="--model-type=transformer --distribution-strategy=llm-training"
 export NEURON_FUSE_SOFTMAX=1
 # Async Runtime
 export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=3
@@ -33,18 +33,16 @@ TOTAL_EPOCHS=5
 WARMUP_STEPS=20
 # learning rate
 LR=3.0e-4
-# model path
-MODEL_PATH="/shared/llama-3.1/"
+# model path (local copy of Hugging Face llama3.1-8B weights and config files created by downlaod_llama_and_dolly.py)
+MODEL_PATH="/shared/trn1_llama_kuberay/hf_llama3.1-8b"
 # sequence length
 SEQ_LEN=8192
 # Path to dataset
-DATA_PATH="/shared/databricks/databricks-dolly-15k"
-#MODEL_ID
+DATA_PATH="/shared/trn1_llama_kuberay/databricks/databricks-dolly-15k"
+# MODEL_ID
 MODEL_ID="NousResearch/Meta-Llama-3.1-8B"
-#Checkpoint Dir
-CKPT_DIR="./LLAMA3_NEURON_CKPT"
-#CKPT frequency
-CKPT_FREQ=5
+# Checkpoint Dir (for checkpoint converted for use with Trainium)
+CKPT_DIR="/shared/trn1_llama_kuberay/Meta-Llama-3.1-8B/"
 #############################################
 
 export NUM_NEURONCORES=32
@@ -79,7 +77,7 @@ if [ $NEURON_EXTRACT_GRAPHS_ONLY -gt 0 ]; then
 else
     STEPS_THIS_RUN=-1
     OUTPUT_LOG=log_exe-$NODE_ID.log
-    EXTRA_ARGS+=" --do_eval"
+    # EXTRA_ARGS+=" --do_eval"  # disable eval as it currently relies on older optimum-neuron which we aren't installing as part of this tutorial
 fi
 
 echo TP_DEGREE=$TP_DEGREE
@@ -118,5 +116,6 @@ python \
     --sequence_parallel_enabled \
     --selective_checkpoint_enabled \
     --num_nodes $NUM_NODES \
+    --pretrained_ckpt $CKPT_DIR \
     $EXTRA_ARGS |& tee $OUTPUT_LOG
 exit ${PIPESTATUS[0]}

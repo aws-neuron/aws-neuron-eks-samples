@@ -32,11 +32,10 @@ import torch_xla.core.xla_model as xm
 from data_module import NeuronLightningDataModule
 from modeling_llama_nxd import CoreAttention, LlamaForCausalLM
 from module_llama import NeuronLlamaLTModule
-from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint
+from lightning.pytorch.trainer.trainer import Trainer
+from lightning.pytorch.callbacks import ModelCheckpoint
 from torchmetrics.text.rouge import ROUGEScore
 from training_utils import create_instruction_based_dataset, get_mixed_precision_config
-#from transformers import AdamW, LlamaConfig, LlamaTokenizer, set_seed
 from transformers import AdamW, LlamaConfig, LlamaTokenizer, AutoTokenizer, PreTrainedTokenizerFast, set_seed
 from transformers.optimization import get_linear_schedule_with_warmup
 from ray_lt_neuron_xla_strategy import RayLightningNeuronXlaStrategy
@@ -62,10 +61,6 @@ import transformers.modeling_utils as modeling_utils
 if os.environ.get("XLA_USE_BF16") or os.environ.get("XLA_DOWNCAST_BF16"):
     modeling_utils.get_parameter_dtype = lambda x: torch.bfloat16
 
-import nltk
-nltk.download('punkt')
-nltk.download('punkt_tab')
-
 # PK:Ray Changes start
 from ray.train.torch import TorchTrainer
 from ray.train import ScalingConfig
@@ -75,15 +70,17 @@ def train_llama(flags):
     print(f"Namespace: {flags}")
     set_seed(flags.seed)
 
-    lora_config = LoraConfig(
-        enable_lora=flags.enable_lora,
-        lora_rank=16,
-        lora_alpha=32,
-        lora_dropout=0.05,
-        bias="none",
-        lora_verbose=True,
-        target_modules=["q_proj", "v_proj", "k_proj"],
-    )
+    if flags.enable_lora:
+        lora_config = LoraConfig(
+            lora_rank=16,
+            lora_alpha=32,
+            lora_dropout=0.05,
+            bias="none",
+            lora_verbose=True,
+            target_modules=["q_proj", "v_proj", "k_proj"],
+        )
+    else:
+        lora_config = None
 
     mixed_precision_config = get_mixed_precision_config(flags.use_gpu_compatible_precision > 0)
 
@@ -124,7 +121,7 @@ def train_llama(flags):
             num_training_steps=max_steps,
             last_epoch=-1,
         )
-    
+
     tokenizer = AutoTokenizer.from_pretrained(flags.model_id)
 
     model = NeuronLlamaLTModule(
@@ -192,12 +189,12 @@ def train_llama(flags):
         trainer.fit(model=model, datamodule=dm, ckpt_path=ckpt_path)
     else:
         trainer.fit(model=model, datamodule=dm)
-    
+
     #Uncomment if you want to save the checkpoint locally after training
     #ckpt_name = flags.model_id.split('/')[1]+".ckpt"
     #trainer.save_checkpoint(ckpt_name)
-    
-    xm.master_print(f"Training finished!")
+
+    xm.master_print("Training finished!")
 
     if flags.do_eval and not os.environ.get("NEURON_EXTRACT_GRAPHS_ONLY", None):
         evaluate(model, tokenizer, dm.test_dataloader(), flags.golden_rouge_score_path)
@@ -233,7 +230,7 @@ def evaluate(model, tokenizer, test_loader, golden_rouge_score_path):
             label_text = tokenizer.decode(labels[0].cpu(), clean_up_tokenization_spaces=True, skip_special_tokens=True)
             rouge.update(predicted_text, label_text)
             if parallel_state.get_tensor_model_parallel_rank() == 0:
-                print(f"=== PROMPT ===")
+                print("=== PROMPT ===")
                 print(prompt)
                 print("=== GENERATED SEQUENCE ===")
                 print(predicted_text)
@@ -395,9 +392,7 @@ def build_args() -> argparse.ArgumentParser:
     parser.add_argument(
         "--golden_rouge_score_path", default=None, type=str, help="Path to golden eval rouge score file."
     )
-    parser.add_argument(
-            "--model_id", default=None, type=str, help="model id- for ex., meta-llama/Meta-Llama-3-8B"
-            )
+    parser.add_argument("--model_id", default=None, type=str, help="model id- for ex., meta-llama/Meta-Llama-3-8B")
     parser.add_argument(
         "--enable_lora",
         default=False,

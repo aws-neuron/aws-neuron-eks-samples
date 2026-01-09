@@ -46,6 +46,10 @@ fi
 
 # Prompt user for desired region
 read -p "Enter the ECR region (ex: us-east-2): " region
+if [[ $region -eq "" ]]; then
+  echo "Error: please try again and enter a valid AWS region"
+  exit 1
+fi
 echo $region > .eks_region
 
 # Check if the ECR repository exists
@@ -78,5 +82,5 @@ docker buildx create --use --name mybuilder --driver docker-container
 docker buildx inspect mybuilder --bootstrap
 
 echo -e "\nBuilding kuberay_trn1 docker image" \
-  && docker buildx build --platform linux/amd64 -t $ECR_REPO_URI:latest --build-arg REGION=$region . --push \
+  && docker buildx build --no-cache --platform linux/amd64 -t $ECR_REPO_URI:latest --build-arg REGION=$region . --push \
   && echo -e "\nImage successfully pushed to ECR"

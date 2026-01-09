@@ -1,9 +1,7 @@
-pytorch-lightning==2.4.0
-optimum-neuron==0.0.21
+lightning==2.6.0
 regex
 tensorboard
 datasets
 sentencepiece
-nltk
 neuronx_distributed
-ray[data,train,tune,serve]
+ray[data,train,tune,serve]==2.52.1

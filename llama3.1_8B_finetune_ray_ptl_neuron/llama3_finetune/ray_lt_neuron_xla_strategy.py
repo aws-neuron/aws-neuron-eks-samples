@@ -5,12 +5,12 @@ from typing import Dict
 from neuronx_distributed.lightning.strategy import NeuronXLAStrategy
 from ray.train.lightning import RayLightningEnvironment
 import torch
-from lightning_fabric.plugins.environments import (
+from lightning.fabric.plugins.environments import (
     TorchElasticEnvironment,
     XLAEnvironment,
 )
-from lightning_fabric.utilities.types import _PATH, ReduceOp
-from pytorch_lightning.strategies import XLAStrategy
+from lightning.fabric.utilities.types import _PATH, ReduceOp
+from lightning.pytorch.strategies import XLAStrategy
 from torch import Tensor
 
 from neuronx_distributed.parallel_layers.parallel_state import (
@@ -48,7 +48,7 @@ class RayLightningNeuronXlaStrategy(NeuronXLAStrategy):
         )
 
     def setup_distributed(self) -> None:
-        print (f"RayNeuronXLAStrategy TRACE: Got call for setup_distributed, value of {self.parallel_devices=}!")
+        print(f"RayNeuronXLAStrategy TRACE: Got call for setup_distributed, value of {self.parallel_devices=}!")
 
         super(NeuronXLAStrategy, self).setup_distributed()
         # init model parallel if needed
@@ -62,5 +62,3 @@ class RayLightningNeuronXlaStrategy(NeuronXLAStrategy):
         self.data_parallel_size = get_data_parallel_size()
         self.tensor_parallel_rank = get_tensor_model_parallel_rank()
         self.pipeline_parallel_rank = get_pipeline_model_parallel_rank()
-        
-        
