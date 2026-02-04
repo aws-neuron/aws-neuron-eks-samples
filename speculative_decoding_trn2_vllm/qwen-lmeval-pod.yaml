@@ -1,0 +1,78 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: qwen-lmeval
+  namespace: default
+spec:
+  serviceAccountName: di-llmperf
+  restartPolicy: Never
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: di-ng
+  containers:
+    - name: app
+      image: python:3.10-slim
+      command:
+        - /bin/bash
+        - "-lc"
+        - |
+          set -e
+
+          apt-get update
+          apt-get install -y git curl jq ca-certificates
+
+          pip install "lm-eval[api]" transformers
+
+          export OPENAI_API_KEY=dummy
+
+          ENDPOINT_SD="http://qwen-sd-vllm.default.svc.cluster.local:8000/v1"
+          ENDPOINT_BASE="http://qwen-vllm.default.svc.cluster.local:8000/v1"
+
+          curl "${ENDPOINT_SD}/models" || echo "qwen-sd-vllm models endpoint failed"
+          curl "${ENDPOINT_BASE}/models" || echo "qwen-vllm models endpoint failed"
+
+          mkdir -p /tmp/results/qwen-sd /tmp/results/qwen-base
+
+          echo ""
+          echo "===== Running lm_eval on qwen-sd-vllm (SD variant) ====="
+          lm_eval --model local-chat-completions \
+            --model_args model=Qwen/Qwen3-32B,base_url=${ENDPOINT_SD}/chat/completions,num_concurrent=4,max_retries=3,tokenized_requests=False,max_gen_toks=512 \
+            --tasks gsm8k \
+            --num_fewshot 0 \
+            --limit 50 \
+            --output_path /tmp/results/qwen-sd \
+            --log_samples \
+            --apply_chat_template \
+            --system_instruction "You are a helpful assistant. Answer math questions directly and concisely. Do not use <think> tags. Give only the final numerical answer."
+
+          echo ""
+          echo "===== Running lm_eval on qwen-vllm (Base variant) ====="
+          lm_eval --model local-chat-completions \
+            --model_args model=Qwen/Qwen3-32B,base_url=${ENDPOINT_BASE}/chat/completions,num_concurrent=4,max_retries=3,tokenized_requests=False,max_gen_toks=512 \
+            --tasks gsm8k \
+            --num_fewshot 0 \
+            --limit 50 \
+            --output_path /tmp/results/qwen-base \
+            --log_samples \
+            --apply_chat_template \
+            --system_instruction "You are a helpful assistant. Answer math questions directly and concisely. Do not use <think> tags. Give only the final numerical answer."
+
+          echo ""
+          echo "===== Evaluation Complete ====="
+          echo ""
+          echo "SD Variant Results:"
+          cat /tmp/results/qwen-sd/results.json 2>/dev/null || echo "No results file found"
+          echo ""
+          echo "Base Variant Results:"
+          cat /tmp/results/qwen-base/results.json 2>/dev/null || echo "No results file found"
+          
+          echo ""
+          echo "===== Sample Responses (SD) ====="
+          for f in /tmp/results/qwen-sd/Qwen__Qwen3-32B/samples_gsm8k_*.jsonl; do
+            head -3 "$f" | jq -c '{doc: .doc.question, target: .target, filtered: .filtered_resps, raw: .resps[0][0][:500]}'
+          done 2>/dev/null || echo "No samples found"
+          
+          echo ""
+          echo "===== Sample Responses (Base) ====="
+          for f in /tmp/results/qwen-base/Qwen__Qwen3-32B/samples_gsm8k_*.jsonl; do
+            head -3 "$f" | jq -c '{doc: .doc.question, target: .target, filtered: .filtered_resps, raw: .resps[0][0][:500]}'
+          done 2>/dev/null || echo "No samples found"
