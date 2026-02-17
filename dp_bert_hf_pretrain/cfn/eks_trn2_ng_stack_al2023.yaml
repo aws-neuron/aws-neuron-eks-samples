@@ -351,23 +351,56 @@ Resources:
           Arn: !GetAtt NodeInstanceProfile.Arn
         UserData: !Base64
           "Fn::Sub": |
-            ---
+            Content-Type: multipart/mixed; boundary="==BOUNDARY=="
+            MIME-Version: 1.0
+
+            --==BOUNDARY==
+            Content-Type: text/cloud-boothook; charset="us-ascii"
+            cloud-init-per once yum_wget yum install -y wget
+            cloud-init-per once wget_efa wget -q --timeout=20 https://s3-us-west-2.amazonaws.com/aws-efa-installer/aws-efa-installer-latest.tar.gz -O /tmp/aws-efa-installer-latest.tar.gz
+
+            cloud-init-per once tar_efa tar -xf /tmp/aws-efa-installer-latest.tar.gz -C /tmp
+            pushd /tmp/aws-efa-installer
+            cloud-init-per once install_efa ./efa_installer.sh -y -g
+            pop /tmp/aws-efa-installer
+
+            cloud-init-per once efa_info /opt/amazon/efa/bin/fi_info -p efa
+
+            --==BOUNDARY==
+            Content-Type: text/x-shellscript; charset="us-ascii"
+
+            #!/bin/bash
+            set -o xtrace
+            aws eks describe-cluster \
+              --region=${AWS::Region} \
+              --name=${ClusterName} \
+              --query 'cluster.{certificateAuthorityData: certificateAuthority.data, endpoint: endpoint, serviceIpv4Cidr: kubernetesNetworkConfig.serviceIpv4Cidr, serviceIpv6Cidr: kubernetesNetworkConfig.serviceIpv6Cidr}' > /tmp/describe_cluster_result.json
+
+            CA=$(cat /tmp/describe_cluster_result.json | grep certificateAuthorityData | awk '{print $2}' | sed 's/[,"]//g')
+            APISERVER_ENDPOINT=$(cat /tmp/describe_cluster_result.json | grep endpoint | awk '{print $2}' | sed 's/[,"]//g')
+            SERVICE_IPV6_CIDR=$(cat /tmp/describe_cluster_result.json | grep serviceIpv6Cidr | awk '{print $2}' | sed 's/[,"]//g')
+            if [[ ! -z "$SERVICE_IPV6_CIDR" && "$SERVICE_IPV6_CIDR" != "null" ]]; then
+              SERVICE_CIDR=$SERVICE_IPV6_CIDR
+            else
+              SERVICE_CIDR=$(cat /tmp/describe_cluster_result.json | grep serviceIpv4Cidr | awk '{print $2}' | sed 's/[,"]//g')
+            fi
+
+            cat > /tmp/nodeadm-config.yaml << EOF
             apiVersion: node.eks.aws/v1alpha1
             kind: NodeConfig
             spec:
               cluster:
                 name: ${ClusterName}
-                apiServerEndpoint: https://${ClusterName}.eks.${AWS::Region}.amazonaws.com
-                certificateAuthority: ""
-              kubelet:
-                config:
-                  clusterDNS:
-                    - 10.100.0.10
+                apiServerEndpoint: $APISERVER_ENDPOINT
+                certificateAuthority: $CA
+                cidr: $SERVICE_CIDR
+            EOF
+            nodeadm init --config-source file:///tmp/nodeadm-config.yaml
+
+            --==BOUNDARY==--
 
         MetadataOptions:
           "HttpPutResponseHopLimit": 2
-
-  NodeLaunchTemplateTrn2u:
     Type: "AWS::EC2::LaunchTemplate"
     Properties:
       LaunchTemplateData:
@@ -506,23 +539,56 @@ Resources:
           Arn: !GetAtt NodeInstanceProfile.Arn
         UserData: !Base64
           "Fn::Sub": |
-            ---
+            Content-Type: multipart/mixed; boundary="==BOUNDARY=="
+            MIME-Version: 1.0
+
+            --==BOUNDARY==
+            Content-Type: text/cloud-boothook; charset="us-ascii"
+            cloud-init-per once yum_wget yum install -y wget
+            cloud-init-per once wget_efa wget -q --timeout=20 https://s3-us-west-2.amazonaws.com/aws-efa-installer/aws-efa-installer-latest.tar.gz -O /tmp/aws-efa-installer-latest.tar.gz
+
+            cloud-init-per once tar_efa tar -xf /tmp/aws-efa-installer-latest.tar.gz -C /tmp
+            pushd /tmp/aws-efa-installer
+            cloud-init-per once install_efa ./efa_installer.sh -y -g
+            pop /tmp/aws-efa-installer
+
+            cloud-init-per once efa_info /opt/amazon/efa/bin/fi_info -p efa
+
+            --==BOUNDARY==
+            Content-Type: text/x-shellscript; charset="us-ascii"
+
+            #!/bin/bash
+            set -o xtrace
+            aws eks describe-cluster \
+              --region=${AWS::Region} \
+              --name=${ClusterName} \
+              --query 'cluster.{certificateAuthorityData: certificateAuthority.data, endpoint: endpoint, serviceIpv4Cidr: kubernetesNetworkConfig.serviceIpv4Cidr, serviceIpv6Cidr: kubernetesNetworkConfig.serviceIpv6Cidr}' > /tmp/describe_cluster_result.json
+
+            CA=$(cat /tmp/describe_cluster_result.json | grep certificateAuthorityData | awk '{print $2}' | sed 's/[,"]//g')
+            APISERVER_ENDPOINT=$(cat /tmp/describe_cluster_result.json | grep endpoint | awk '{print $2}' | sed 's/[,"]//g')
+            SERVICE_IPV6_CIDR=$(cat /tmp/describe_cluster_result.json | grep serviceIpv6Cidr | awk '{print $2}' | sed 's/[,"]//g')
+            if [[ ! -z "$SERVICE_IPV6_CIDR" && "$SERVICE_IPV6_CIDR" != "null" ]]; then
+              SERVICE_CIDR=$SERVICE_IPV6_CIDR
+            else
+              SERVICE_CIDR=$(cat /tmp/describe_cluster_result.json | grep serviceIpv4Cidr | awk '{print $2}' | sed 's/[,"]//g')
+            fi
+
+            cat > /tmp/nodeadm-config.yaml << EOF
             apiVersion: node.eks.aws/v1alpha1
             kind: NodeConfig
             spec:
               cluster:
                 name: ${ClusterName}
-                apiServerEndpoint: https://${ClusterName}.eks.${AWS::Region}.amazonaws.com
-                certificateAuthority: ""
-              kubelet:
-                config:
-                  clusterDNS:
-                    - 10.100.0.10
+                apiServerEndpoint: $APISERVER_ENDPOINT
+                certificateAuthority: $CA
+                cidr: $SERVICE_CIDR
+            EOF
+            nodeadm init --config-source file:///tmp/nodeadm-config.yaml
+
+            --==BOUNDARY==--
 
         MetadataOptions:
           "HttpPutResponseHopLimit": 2
-
-Outputs:
   EKSClusterName:
     Description: EKS Cluster
     Value: !Ref ClusterName
