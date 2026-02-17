@@ -1,0 +1,548 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Amazon EKS - Nodegroup resources for trn2.48xlarge and trn2u.48xlarge instances
+
+Metadata:
+  "AWS::CloudFormation::Interface":
+    ParameterGroups:
+      - Label:
+          default: EKS Cluster
+        Parameters:
+          - ClusterName
+          - ClusterControlPlaneSecurityGroup
+      - Label:
+          default: Worker Node Configuration
+        Parameters:
+          - NodeImageIdSSMParam
+          - NodeImageId
+          - NodeVolumeSize
+      - Label:
+          default: Worker Network Configuration
+        Parameters:
+          - VpcId
+
+Parameters:
+  ClusterControlPlaneSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup::Id"
+    Description: The security group of the cluster control plane.
+
+  ClusterName:
+    Type: String
+    Description: The cluster name provided when the cluster was created. If it is incorrect, nodes will not be able to join the cluster.
+
+  NodeImageId:
+    Type: String
+    Default: ""
+    Description: (Optional) Specify your own custom image ID. This value overrides any AWS Systems Manager Parameter Store value specified above.
+
+  NodeImageIdSSMParam:
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: /aws/service/eks/optimized-ami/1.34/amazon-linux-2023/x86_64/standard/recommended/image_id
+    Description: AWS Systems Manager Parameter Store parameter of the AMI ID for the worker node instances.
+
+  NodeVolumeSize:
+    Type: Number
+    Default: 500
+    Description: Node volume size
+
+  VpcId:
+    Type: "AWS::EC2::VPC::Id"
+    Description: The VPC of the worker instances
+
+Mappings:
+  PartitionMap:
+    aws:
+      EC2ServicePrincipal: "ec2.amazonaws.com"
+    aws-us-gov:
+      EC2ServicePrincipal: "ec2.amazonaws.com"
+    aws-cn:
+      EC2ServicePrincipal: "ec2.amazonaws.com.cn"
+    aws-iso:
+      EC2ServicePrincipal: "ec2.c2s.ic.gov"
+    aws-iso-b:
+      EC2ServicePrincipal: "ec2.sc2s.sgov.gov"
+
+Conditions:
+  HasNodeImageId: !Not
+    - "Fn::Equals":
+        - Ref: NodeImageId
+        - ""
+
+Resources:
+
+  PlacementGroupTrn2:
+   Type: AWS::EC2::PlacementGroup
+   Properties:
+     Strategy: cluster
+
+  PlacementGroupTrn2u:
+   Type: AWS::EC2::PlacementGroup
+   Properties:
+     Strategy: cluster
+  
+  NodeInstanceRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - !FindInMap [PartitionMap, !Ref "AWS::Partition", EC2ServicePrincipal]
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKS_CNI_Policy"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      Path: /
+
+  NodeInstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: /
+      Roles:
+        - Ref: NodeInstanceRole
+
+  NodeSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: Security group for all nodes in the cluster
+      Tags:
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+      VpcId: !Ref VpcId
+
+  NodeSecurityGroupIngress:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow node to communicate with each other
+      FromPort: 0
+      GroupId: !Ref NodeSecurityGroup
+      IpProtocol: "-1"
+      SourceSecurityGroupId: !Ref NodeSecurityGroup
+      ToPort: 65535
+
+  NodeSecurityGroupEgress:
+    Type: "AWS::EC2::SecurityGroupEgress"
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow the efa worker nodes outbound communication
+      DestinationSecurityGroupId: !Ref NodeSecurityGroup
+      FromPort: 0
+      GroupId: !Ref NodeSecurityGroup
+      IpProtocol: "-1"
+      ToPort: 65536
+  
+  NodeSecurityGroupEgressAllIpv4:
+    Type: "AWS::EC2::SecurityGroupEgress"
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow the efa worker nodes outbound communication
+      FromPort: 0
+      CidrIp: "0.0.0.0/0"
+      GroupId: !Ref NodeSecurityGroup
+      IpProtocol: "-1"
+      ToPort: 65536
+
+  NodeSecurityGroupEgressAllIpv6:
+    Type: "AWS::EC2::SecurityGroupEgress"
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow the efa worker nodes outbound communication
+      FromPort: 0
+      CidrIpv6: "::/0"
+      GroupId: !Ref NodeSecurityGroup
+      IpProtocol: "-1"
+      ToPort: 65536
+  
+  NodeSecurityGroupIngressSSHIpv4:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow SSH
+      FromPort: 22
+      CidrIp: "0.0.0.0/0"
+      GroupId: !Ref NodeSecurityGroup
+      IpProtocol: "tcp"
+      ToPort: 22
+
+  NodeSecurityGroupIngressSSHIpv6:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow SSH
+      FromPort: 22
+      CidrIpv6: "::/0"
+      GroupId: !Ref NodeSecurityGroup
+      IpProtocol: "tcp"
+      ToPort: 22
+
+  ClusterControlPlaneSecurityGroupIngress:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow pods to communicate with the cluster API Server
+      FromPort: 443
+      GroupId: !Ref ClusterControlPlaneSecurityGroup
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref NodeSecurityGroup
+      ToPort: 443
+
+  ControlPlaneEgressToNodeSecurityGroup:
+    Type: "AWS::EC2::SecurityGroupEgress"
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow the cluster control plane to communicate with worker Kubelet and pods
+      DestinationSecurityGroupId: !Ref NodeSecurityGroup
+      FromPort: 1025
+      GroupId: !Ref ClusterControlPlaneSecurityGroup
+      IpProtocol: tcp
+      ToPort: 65535
+
+  ControlPlaneEgressToNodeSecurityGroupOn443:
+    Type: "AWS::EC2::SecurityGroupEgress"
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow the cluster control plane to communicate with pods running extension API servers on port 443
+      DestinationSecurityGroupId: !Ref NodeSecurityGroup
+      FromPort: 443
+      GroupId: !Ref ClusterControlPlaneSecurityGroup
+      IpProtocol: tcp
+      ToPort: 443
+
+  NodeSecurityGroupFromControlPlaneIngress:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow worker Kubelets and pods to receive communication from the cluster control plane
+      FromPort: 1025
+      GroupId: !Ref NodeSecurityGroup
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref ClusterControlPlaneSecurityGroup
+      ToPort: 65535
+
+  NodeSecurityGroupFromControlPlaneOn443Ingress:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow pods running extension API servers on port 443 to receive communication from cluster control plane
+      FromPort: 443
+      GroupId: !Ref NodeSecurityGroup
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref ClusterControlPlaneSecurityGroup
+      ToPort: 443
+
+  LustreSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    DependsOn: NodeSecurityGroup
+    Properties:
+      GroupDescription: Security group used by FSx for Lustre
+      Tags:
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+      VpcId: !Ref VpcId
+
+  LustreSecurityGroupSelfIngress:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    DependsOn: LustreSecurityGroup
+    Properties:
+      Description: Allow traffic between Lustre nodes
+      FromPort: 988
+      GroupId: !Ref LustreSecurityGroup
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref LustreSecurityGroup
+      ToPort: 988
+
+  LustreSecurityGroupEksNodeIngress:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    DependsOn: LustreSecurityGroup
+    Properties:
+      Description: Allow traffic between FSx for Lustre and Lustre clients
+      FromPort: 988
+      GroupId: !Ref LustreSecurityGroup
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref NodeSecurityGroup
+      ToPort: 988
+
+  NodeLaunchTemplateTrn2:
+    Type: "AWS::EC2::LaunchTemplate"
+    Properties:
+      LaunchTemplateData:
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              DeleteOnTermination: true
+              VolumeSize: !Ref NodeVolumeSize
+              VolumeType: gp3
+        ImageId: !If
+          - HasNodeImageId
+          - Ref: NodeImageId
+          - Ref: NodeImageIdSSMParam
+        InstanceType: trn2.48xlarge
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub ${ClusterName}-trn2-48xl-ng1
+        NetworkInterfaces:
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 0
+            DeviceIndex: 0
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 1
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 2
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 3
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 4
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 5
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 6
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 7
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+        Placement:
+          GroupName: !Ref PlacementGroupTrn2
+        IamInstanceProfile:
+          Arn: !GetAtt NodeInstanceProfile.Arn
+        UserData: !Base64
+          "Fn::Sub": |
+            ---
+            apiVersion: node.eks.aws/v1alpha1
+            kind: NodeConfig
+            spec:
+              cluster:
+                name: ${ClusterName}
+                apiServerEndpoint: https://${ClusterName}.eks.${AWS::Region}.amazonaws.com
+                certificateAuthority: ""
+              kubelet:
+                config:
+                  clusterDNS:
+                    - 10.100.0.10
+
+        MetadataOptions:
+          "HttpPutResponseHopLimit": 2
+
+  NodeLaunchTemplateTrn2u:
+    Type: "AWS::EC2::LaunchTemplate"
+    Properties:
+      LaunchTemplateData:
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              DeleteOnTermination: true
+              VolumeSize: !Ref NodeVolumeSize
+              VolumeType: gp3
+        ImageId: !If
+          - HasNodeImageId
+          - Ref: NodeImageId
+          - Ref: NodeImageIdSSMParam
+        InstanceType: trn2u.48xlarge
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub ${ClusterName}-trn2u-48xl-ng1
+        NetworkInterfaces:
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 0
+            DeviceIndex: 0
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 1
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 2
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 3
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 4
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 5
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 6
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 7
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 8
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 9
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 10
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 11
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 12
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 13
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 14
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 15
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+        Placement:
+          GroupName: !Ref PlacementGroupTrn2u
+        IamInstanceProfile:
+          Arn: !GetAtt NodeInstanceProfile.Arn
+        UserData: !Base64
+          "Fn::Sub": |
+            ---
+            apiVersion: node.eks.aws/v1alpha1
+            kind: NodeConfig
+            spec:
+              cluster:
+                name: ${ClusterName}
+                apiServerEndpoint: https://${ClusterName}.eks.${AWS::Region}.amazonaws.com
+                certificateAuthority: ""
+              kubelet:
+                config:
+                  clusterDNS:
+                    - 10.100.0.10
+
+        MetadataOptions:
+          "HttpPutResponseHopLimit": 2
+
+Outputs:
+  EKSClusterName:
+    Description: EKS Cluster
+    Value: !Ref ClusterName
+
+  NodeInstanceRole:
+    Description: The node instance role
+    Value: !GetAtt NodeInstanceRole.Arn
+
+  LaunchTemplateIdTrn2:
+    Description: The launch template created for Trn2.48xlarge instances
+    Value: !Ref NodeLaunchTemplateTrn2
+
+  LaunchTemplateIdTrn2u:
+    Description: The launch template created for Trn2u.48xlarge instances
+    Value: !Ref NodeLaunchTemplateTrn2u
+
+  NodeSecurityGroup:
+    Description: SG used by all nodes in this NodeGroup
+    Value: !Ref NodeSecurityGroup
+
+  LustreSecurityGroup:
+    Description: SG used by FSx for Lustre
+    Value: !Ref LustreSecurityGroup
