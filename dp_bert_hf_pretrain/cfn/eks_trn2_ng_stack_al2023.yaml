@@ -361,6 +361,62 @@ Resources:
             Groups:
               - !Ref NodeSecurityGroup
             InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 8
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 9
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 10
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 11
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 12
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 13
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 14
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 15
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
         Placement:
           GroupName: !Ref PlacementGroupTrn2
         UserData: !Base64
