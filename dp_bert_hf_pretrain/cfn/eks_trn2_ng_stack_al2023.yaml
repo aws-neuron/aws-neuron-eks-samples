@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
-Description: Amazon EKS - Nodegroup resources for trn1.32xlarge and trn1n.32xlarge instances
+Description: Amazon EKS - Nodegroup resources for trn2.48xlarge and trn2u.48xlarge instances
 
 Metadata:
   "AWS::CloudFormation::Interface":
@@ -10,24 +10,21 @@ Metadata:
         Parameters:
           - ClusterName
           - ClusterControlPlaneSecurityGroup
+          - ClusterCertificateAuthority
+          - ClusterEndpoint
+          - ClusterServiceCidr
       - Label:
           default: Worker Node Configuration
         Parameters:
           - NodeImageIdSSMParam
           - NodeImageId
           - NodeVolumeSize
-          - BootstrapArguments
       - Label:
           default: Worker Network Configuration
         Parameters:
           - VpcId
 
 Parameters:
-  BootstrapArguments:
-    Type: String
-    Default: ""
-    Description: "Arguments to pass to the bootstrap script. See files/bootstrap.sh in https://github.com/awslabs/amazon-eks-ami"
-
   ClusterControlPlaneSecurityGroup:
     Type: "AWS::EC2::SecurityGroup::Id"
     Description: The security group of the cluster control plane.
@@ -36,6 +33,19 @@ Parameters:
     Type: String
     Description: The cluster name provided when the cluster was created. If it is incorrect, nodes will not be able to join the cluster.
 
+  ClusterEndpoint:
+    Type: String
+    Description: The API server endpoint for the EKS cluster. Obtain via aws eks describe-cluster --name <name> --query 'cluster.endpoint' --output text
+
+  ClusterCertificateAuthority:
+    Type: String
+    Description: The base64-encoded certificate authority data for the EKS cluster. Obtain via aws eks describe-cluster --name <name> --query 'cluster.certificateAuthority.data' --output text
+
+  ClusterServiceCidr:
+    Type: String
+    Default: "10.100.0.0/16"
+    Description: The Kubernetes service CIDR for the EKS cluster. Obtain via aws eks describe-cluster --name <name> --query 'cluster.kubernetesNetworkConfig.serviceIpv4Cidr' --output text
+
   NodeImageId:
     Type: String
     Default: ""
@@ -43,7 +53,7 @@ Parameters:
 
   NodeImageIdSSMParam:
     Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
-    Default: /aws/service/eks/optimized-ami/1.25/amazon-linux-2-gpu/recommended/image_id
+    Default: /aws/service/eks/optimized-ami/1.34/amazon-linux-2023/x86_64/neuron/recommended/image_id
     Description: AWS Systems Manager Parameter Store parameter of the AMI ID for the worker node instances.
 
   NodeVolumeSize:
@@ -76,12 +86,12 @@ Conditions:
 
 Resources:
 
-  PlacementGroupTrn1:
+  PlacementGroupTrn2:
    Type: AWS::EC2::PlacementGroup
    Properties:
      Strategy: cluster
 
-  PlacementGroupTrn1n:
+  PlacementGroupTrn2u:
    Type: AWS::EC2::PlacementGroup
    Properties:
      Strategy: cluster
@@ -102,7 +112,7 @@ Resources:
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKSWorkerNodePolicy"
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKS_CNI_Policy"
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonElasticContainerRegistryPublicReadOnly'
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonElasticContainerRegistryPublicReadOnly"
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
       Path: /
 
@@ -275,7 +285,7 @@ Resources:
       SourceSecurityGroupId: !Ref NodeSecurityGroup
       ToPort: 988
 
-  NodeLaunchTemplateTrn1:
+  NodeLaunchTemplateTrn2:
     Type: "AWS::EC2::LaunchTemplate"
     Properties:
       LaunchTemplateData:
@@ -289,12 +299,12 @@ Resources:
           - HasNodeImageId
           - Ref: NodeImageId
           - Ref: NodeImageIdSSMParam
-        InstanceType: trn1.32xlarge
+        InstanceType: trn2.48xlarge
         TagSpecifications:
           - ResourceType: instance
             Tags:
               - Key: Name
-                Value: !Sub ${ClusterName}-trn1-32xl-ng1
+                Value: !Sub ${ClusterName}-trn2-48xl-ng1
         NetworkInterfaces:
           - Description: NetworkInterfaces Configuration For EFA and EKS
             NetworkCardIndex: 0
@@ -320,113 +330,6 @@ Resources:
           - Description: NetworkInterfaces Configuration For EFA and EKS
             NetworkCardIndex: 3
             DeviceIndex: 1
-            DeleteOnTermination: true
-            Groups:
-              - !Ref NodeSecurityGroup
-            InterfaceType: efa
-          - Description: NetworkInterfaces Configuration For EFA and EKS
-            NetworkCardIndex: 4
-            DeviceIndex: 1
-            DeleteOnTermination: true
-            Groups:
-              - !Ref NodeSecurityGroup
-            InterfaceType: efa
-          - Description: NetworkInterfaces Configuration For EFA and EKS
-            NetworkCardIndex: 5
-            DeviceIndex: 1
-            DeleteOnTermination: true
-            Groups:
-              - !Ref NodeSecurityGroup
-            InterfaceType: efa
-          - Description: NetworkInterfaces Configuration For EFA and EKS
-            NetworkCardIndex: 6
-            DeviceIndex: 1
-            DeleteOnTermination: true
-            Groups:
-              - !Ref NodeSecurityGroup
-            InterfaceType: efa
-          - Description: NetworkInterfaces Configuration For EFA and EKS
-            NetworkCardIndex: 7
-            DeviceIndex: 1
-            DeleteOnTermination: true
-            Groups:
-              - !Ref NodeSecurityGroup
-            InterfaceType: efa
-        Placement:
-          GroupName: !Ref PlacementGroupTrn1
-        UserData: !Base64
-          "Fn::Sub": |
-            Content-Type: multipart/mixed; boundary="==BOUNDARY=="
-            MIME-Version: 1.0
-
-            --==BOUNDARY==
-            Content-Type: text/cloud-boothook; charset="us-ascii"
-            cloud-init-per once yum_wget yum install -y wget
-            cloud-init-per once wget_efa wget -q --timeout=20 https://s3-us-west-2.amazonaws.com/aws-efa-installer/aws-efa-installer-latest.tar.gz -O /tmp/aws-efa-installer-latest.tar.gz
-
-            cloud-init-per once tar_efa tar -xf /tmp/aws-efa-installer-latest.tar.gz -C /tmp
-            pushd /tmp/aws-efa-installer
-            cloud-init-per once install_efa ./efa_installer.sh -y -g
-            pop /tmp/aws-efa-installer
-
-            cloud-init-per once efa_info /opt/amazon/efa/bin/fi_info -p efa
-
-            --==BOUNDARY==
-            Content-Type: text/x-shellscript; charset="us-ascii"
-
-            #!/bin/bash
-            set -o xtrace
-            /etc/eks/bootstrap.sh ${ClusterName} ${BootstrapArguments}
-            --==BOUNDARY==--
-
-        MetadataOptions:
-          "HttpPutResponseHopLimit": 2
-
-  NodeLaunchTemplateTrn1n:
-    Type: "AWS::EC2::LaunchTemplate"
-    Properties:
-      LaunchTemplateData:
-        BlockDeviceMappings:
-          - DeviceName: /dev/xvda
-            Ebs:
-              DeleteOnTermination: true
-              VolumeSize: !Ref NodeVolumeSize
-              VolumeType: gp3
-        ImageId: !If
-          - HasNodeImageId
-          - Ref: NodeImageId
-          - Ref: NodeImageIdSSMParam
-        InstanceType: trn1n.32xlarge
-        TagSpecifications:
-          - ResourceType: instance
-            Tags:
-              - Key: Name
-                Value: !Sub ${ClusterName}-trn1n-32xl-ng1
-        NetworkInterfaces:
-          - Description: NetworkInterfaces Configuration For EFA and EKS
-            NetworkCardIndex: 0
-            DeviceIndex: 0
-            DeleteOnTermination: true
-            Groups:
-              - !Ref NodeSecurityGroup
-            InterfaceType: efa
-          - Description: NetworkInterfaces Configuration For EFA and EKS
-            NetworkCardIndex: 1
-            DeviceIndex: 1
-            DeleteOnTermination: true
-            Groups:
-              - !Ref NodeSecurityGroup
-            InterfaceType: efa
-          - Description: NetworkInterfaces Configuration For EFA and EKS
-            NetworkCardIndex: 2
-            DeviceIndex: 2
-            DeleteOnTermination: true
-            Groups:
-              - !Ref NodeSecurityGroup
-            InterfaceType: efa
-          - Description: NetworkInterfaces Configuration For EFA and EKS
-            NetworkCardIndex: 3
-            DeviceIndex: 3
             DeleteOnTermination: true
             Groups:
               - !Ref NodeSecurityGroup
@@ -474,7 +377,7 @@ Resources:
               - !Ref NodeSecurityGroup
             InterfaceType: efa
           - Description: NetworkInterfaces Configuration For EFA and EKS
-            NetworkCardIndex: 10 
+            NetworkCardIndex: 10
             DeviceIndex: 1
             DeleteOnTermination: true
             Groups:
@@ -516,7 +419,7 @@ Resources:
               - !Ref NodeSecurityGroup
             InterfaceType: efa
         Placement:
-          GroupName: !Ref PlacementGroupTrn1n
+          GroupName: !Ref PlacementGroupTrn2
         UserData: !Base64
           "Fn::Sub": |
             Content-Type: multipart/mixed; boundary="==BOUNDARY=="
@@ -524,27 +427,201 @@ Resources:
 
             --==BOUNDARY==
             Content-Type: text/cloud-boothook; charset="us-ascii"
+
+            #!/bin/bash
             cloud-init-per once yum_wget yum install -y wget
             cloud-init-per once wget_efa wget -q --timeout=20 https://s3-us-west-2.amazonaws.com/aws-efa-installer/aws-efa-installer-latest.tar.gz -O /tmp/aws-efa-installer-latest.tar.gz
-
             cloud-init-per once tar_efa tar -xf /tmp/aws-efa-installer-latest.tar.gz -C /tmp
-            pushd /tmp/aws-efa-installer
+            
+            cd /tmp/aws-efa-installer
             cloud-init-per once install_efa ./efa_installer.sh -y -g
-            pop /tmp/aws-efa-installer
-
             cloud-init-per once efa_info /opt/amazon/efa/bin/fi_info -p efa
 
             --==BOUNDARY==
-            Content-Type: text/x-shellscript; charset="us-ascii"
+            Content-Type: application/node.eks.aws
 
-            #!/bin/bash
-            set -o xtrace
-            /etc/eks/bootstrap.sh ${ClusterName} ${BootstrapArguments}
+            apiVersion: node.eks.aws/v1alpha1
+            kind: NodeConfig
+            spec:
+              cluster:
+                name: ${ClusterName}
+                apiServerEndpoint: ${ClusterEndpoint}
+                certificateAuthority: ${ClusterCertificateAuthority}
+                cidr: ${ClusterServiceCidr}
+
             --==BOUNDARY==--
 
         MetadataOptions:
           "HttpPutResponseHopLimit": 2
+  NodeLaunchTemplateTrn2u:
+    Type: "AWS::EC2::LaunchTemplate"
+    Properties:
+      LaunchTemplateData:
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              DeleteOnTermination: true
+              VolumeSize: !Ref NodeVolumeSize
+              VolumeType: gp3
+        ImageId: !If
+          - HasNodeImageId
+          - Ref: NodeImageId
+          - Ref: NodeImageIdSSMParam
+        InstanceType: trn2u.48xlarge
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub ${ClusterName}-trn2u-48xl-ng1
+        NetworkInterfaces:
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 0
+            DeviceIndex: 0
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 1
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 2
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 3
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 4
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 5
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 6
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 7
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 8
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 9
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 10
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 11
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 12
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 13
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 14
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+          - Description: NetworkInterfaces Configuration For EFA and EKS
+            NetworkCardIndex: 15
+            DeviceIndex: 1
+            DeleteOnTermination: true
+            Groups:
+              - !Ref NodeSecurityGroup
+            InterfaceType: efa
+        Placement:
+          GroupName: !Ref PlacementGroupTrn2u
+        UserData: !Base64
+          "Fn::Sub": |
+            Content-Type: multipart/mixed; boundary="==BOUNDARY=="
+            MIME-Version: 1.0
 
+            --==BOUNDARY==
+            Content-Type: text/cloud-boothook; charset="us-ascii"
+
+            #!/bin/bash
+            cloud-init-per once yum_wget yum install -y wget
+            cloud-init-per once wget_efa wget -q --timeout=20 https://s3-us-west-2.amazonaws.com/aws-efa-installer/aws-efa-installer-latest.tar.gz -O /tmp/aws-efa-installer-latest.tar.gz
+            cloud-init-per once tar_efa tar -xf /tmp/aws-efa-installer-latest.tar.gz -C /tmp
+            
+            cd /tmp/aws-efa-installer
+            cloud-init-per once install_efa ./efa_installer.sh -y -g
+            cloud-init-per once efa_info /opt/amazon/efa/bin/fi_info -p efa
+
+
+            --==BOUNDARY==
+            Content-Type: application/node.eks.aws
+
+            apiVersion: node.eks.aws/v1alpha1
+            kind: NodeConfig
+            spec:
+              cluster:
+                name: ${ClusterName}
+                apiServerEndpoint: ${ClusterEndpoint}
+                certificateAuthority: ${ClusterCertificateAuthority}
+                cidr: ${ClusterServiceCidr}
+
+            --==BOUNDARY==--
+
+        MetadataOptions:
+          "HttpPutResponseHopLimit": 2
 Outputs:
   EKSClusterName:
     Description: EKS Cluster
@@ -554,13 +631,13 @@ Outputs:
     Description: The node instance role
     Value: !GetAtt NodeInstanceRole.Arn
 
-  LaunchTemplateIdTrn1:
-    Description: The launch template created for Trn1.32xlarge instances
-    Value: !Ref NodeLaunchTemplateTrn1
+  LaunchTemplateIdTrn2:
+    Description: The launch template created for Trn2.48xlarge instances
+    Value: !Ref NodeLaunchTemplateTrn2
 
-  LaunchTemplateIdTrn1n:
-    Description: The launch template created for Trn1n.32xlarge instances
-    Value: !Ref NodeLaunchTemplateTrn1n
+  LaunchTemplateIdTrn2u:
+    Description: The launch template created for Trn2u.48xlarge instances
+    Value: !Ref NodeLaunchTemplateTrn2u
 
   NodeSecurityGroup:
     Description: SG used by all nodes in this NodeGroup
