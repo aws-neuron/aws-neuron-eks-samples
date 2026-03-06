@@ -161,6 +161,48 @@ export CLUSTER_NAME=your-cluster-name
 aws s3 mb s3://${S3_BUCKET_NAME} --region ${AWS_REGION}
 ```
 
+Create Least-Privilege S3 IAM Policy
+
+Define your bucket name:
+
+```bash
+export S3_BUCKET=YOUR_BUCKET
+export POLICY_NAME=vllm-trn2-s3-policy
+```
+
+Create the policy document:
+
+```bash
+cat <<EOF > s3-policy.json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::${S3_BUCKET}",
+        "arn:aws:s3:::${S3_BUCKET}/*"
+      ]
+    }
+  ]
+}
+EOF
+```
+
+Create the IAM policy:
+
+```bash
+POLICY_ARN=$(aws iam create-policy \
+  --policy-name $POLICY_NAME \
+  --policy-document file://s3-policy.json \
+  --query 'Policy.Arn' \
+  --output text)
+```
 Create an IAM service account for S3 access:
 
 ```bash
@@ -170,7 +212,7 @@ eksctl create iamserviceaccount \
   --cluster ${CLUSTER_NAME} \
   --role-name s3-csi-driver-sa-role \
   --region ${AWS_REGION} \
-  --attach-policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess \
+  --attach-policy-arn ${POLICY_ARN} \
   --approve
 ```
 
