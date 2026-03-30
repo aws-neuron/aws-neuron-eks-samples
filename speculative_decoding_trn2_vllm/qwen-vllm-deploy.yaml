@@ -51,7 +51,7 @@ spec:
           volumeMounts:
             - name: dshm
               mountPath: /dev/shm
-            - name: 621547421844-ap-southeast-4-pvc
+            - name: my-pvc
               mountPath: /var/mdl
           env:
             - name: VLLM_NEURON_FRAMEWORK
@@ -93,6 +93,6 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 128Gi
-        - name: 621547421844-ap-southeast-4-pvc
+        - name: my-pvc
           persistentVolumeClaim:
-            claimName: 621547421844-ap-southeast-4-pvc
+            claimName: my-pvc
