@@ -4,4 +4,4 @@ tensorboard
 datasets
 sentencepiece
 neuronx_distributed
-ray[data,train,tune,serve]==2.52.1
+ray[data,train,tune,serve]==2.55.0
