@@ -1,0 +1,282 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rolling-forcing
+  namespace: default
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: rolling-forcing
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        node.kubernetes.io/instance-type: trn2.48xlarge
+      resourceClaims:
+        - name: s-lnc2-trn2
+          resourceClaimTemplateName: s-lnc2-trn2
+      containers:
+        - name: inference
+          image: 421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-d1c940d:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - "-exc"
+            - |
+              set -euxo pipefail
+              
+              # Clone the repository (rolling-forcing branch)
+              git clone -b rolling-forcing https://yahavb:${GITHUB_TOKEN}@github.com/aws-neuron/aws-neuron-eks-samples.git
+              
+              export RF_DEVICE_BACKEND=neuron
+              cd aws-neuron-eks-samples/rolling-forcing/app
+              
+              # Install dependencies
+              uv pip install -r requirements.txt
+              uv pip install "setuptools<81"
+              uv pip install git+https://github.com/pytorch/vision.git@v0.25.0 --no-deps --no-cache --no-build-isolation
+              
+              # /var/mdl is S3-backed. Use single tar file to avoid per-file S3 overhead
+              WAN_1_3B_TAR="/var/mdl/wan_models/Wan2.1-T2V-1.3B.tar"
+              
+              # Copy Wan 1.3B model as single tar from S3 cache to local disk
+              mkdir -p wan_models
+              if [[ -f "$WAN_1_3B_TAR" ]]; then
+                echo "Copying Wan 1.3B tar from S3 cache..."
+                cp "$WAN_1_3B_TAR" /tmp/Wan2.1-T2V-1.3B.tar
+                echo "Extracting..."
+                tar xf /tmp/Wan2.1-T2V-1.3B.tar -C wan_models/
+                rm -f /tmp/Wan2.1-T2V-1.3B.tar
+                echo "Done!"
+              else
+                echo "Downloading Wan 1.3B model from HuggingFace to local disk..."
+                python3 -c "from huggingface_hub import snapshot_download; snapshot_download('Wan-AI/Wan2.1-T2V-1.3B', local_dir='wan_models/Wan2.1-T2V-1.3B', local_dir_use_symlinks=False)"
+                echo "Creating tar archive for S3 cache (avoids per-file overhead next time)..."
+                tar cf /tmp/Wan2.1-T2V-1.3B.tar -C wan_models Wan2.1-T2V-1.3B
+                mkdir -p "$(dirname $WAN_1_3B_TAR)"
+                cp /tmp/Wan2.1-T2V-1.3B.tar "$WAN_1_3B_TAR"
+                rm -f /tmp/Wan2.1-T2V-1.3B.tar
+                echo "Cached tar to S3!"
+              fi
+              
+              echo "Model weights ready!"
+              
+              # Copy RollingForcing DMD checkpoint from S3 cache to local disk
+              RF_CACHE="/var/mdl/checkpoints/rolling_forcing_dmd.pt"
+              mkdir -p checkpoints
+              if [[ -f "$RF_CACHE" ]]; then
+                echo "Copying RollingForcing checkpoint from S3 cache to local disk..."
+                cp "$RF_CACHE" checkpoints/rolling_forcing_dmd.pt
+                echo "Copy complete!"
+              else
+                echo "Downloading RollingForcing checkpoint from HuggingFace to local disk..."
+                python3 -c "from huggingface_hub import hf_hub_download; hf_hub_download('TencentARC/RollingForcing', 'checkpoints/rolling_forcing_dmd.pt', local_dir='.')"
+                echo "Caching to S3 for next time..."
+                mkdir -p "$(dirname $RF_CACHE)"
+                cp checkpoints/rolling_forcing_dmd.pt "$RF_CACHE"
+              fi
+              
+              # ========================================
+              # NEFF Cache: controlled by USE_NEFF_CACHE env var
+              # ========================================
+              NEFF_LOCAL="/tmp/neff_cache"
+              NEFF_S3="/var/mdl/neff_cache_1.3b"
+              mkdir -p "$NEFF_LOCAL"
+              
+              if [[ "${USE_NEFF_CACHE:-true}" == "true" && -d "$NEFF_S3" && -n "$(ls -A $NEFF_S3 2>/dev/null)" ]]; then
+                echo "Loading NEFF cache from S3..."
+                cp -r "$NEFF_S3/"* "$NEFF_LOCAL/"
+                echo "NEFF cache loaded ($(du -sh $NEFF_LOCAL | cut -f1))"
+              else
+                echo "NEFF cache disabled or empty - will compile fresh"
+              fi
+              
+              # Launch with torchrun for TP=4
+              # All 4 ranks load the DiT sharded across cores (ND0+ND1)
+              # Rank 0 hosts VAE, Rank 2 hosts T5, all run DiT
+              export REPO_DIR=$(pwd)
+              torchrun --nproc_per_node=4 --master_port=29500 \
+                inference_neuron_tp.py 2>&1
+              
+              # Keep pod alive for manual testing via port-forward
+              while :; do :; sleep 10; done
+          resources:
+            claims:
+              - name: s-lnc2-trn2
+            requests:
+              cpu: 44
+              memory: 440Gi
+            limits:
+              cpu: 44
+              memory: 440Gi
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: 621547421844-ap-southeast-4-pvc
+              mountPath: /var/mdl
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: NEURON_RT_LOG_LEVEL
+              value: "ERROR"
+            - name: NEURON_CC_LOG_LEVEL
+              value: "ERROR"
+            - name: TORCH_NEURONX_LOG_LEVEL
+              value: "ERROR"
+            - name: RF_DEVICE_BACKEND
+              value: "neuron"
+            - name: NEURON_LOGICAL_NC_CONFIG
+              value: "2"
+            - name: NEURON_RT_DBG_INTRA_RDH_CHANNEL_BUFFER_SIZE
+              value: "134217728"
+            - name: NEURON_CC_FLAGS
+              value: "--model-type=transformer"
+            - name: USE_NKI_KERNELS
+              value: "true"
+            - name: USE_NEFF_CACHE
+              value: "false"
+            - name: VALIDATE_PIPELINE
+              value: "1"
+            - name: CONFIG_PATH
+              value: "configs/default_config.yaml"
+            - name: MODEL_PATH
+              value: "wan_models/Wan2.1-T2V-1.3B"
+            - name: VAE_PATH
+              value: "wan_models/Wan2.1-T2V-1.3B/Wan2.1_VAE.pth"
+            - name: CHECKPOINT_PATH
+              value: "checkpoints/rolling_forcing_dmd.pt"
+            - name: DEFAULT_NUM_FRAMES
+              value: "161"
+            - name: DEFAULT_FPS
+              value: "16"
+            - name: TP_DEGREE
+              value: "4"
+            - name: T5_RANK
+              value: "2"
+            - name: DEVICE
+              value: "neuron"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-token
+                  key: GITHUB_TOKEN
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+        # Sidecar: waits for server health, then runs FPS benchmark
+        - name: trigger
+          image: 421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-d1c940d:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - "-c"
+            - |
+              set -euo pipefail
+              echo "[trigger] Waiting for inference server to be ready..."
+              until curl -sf http://localhost:8000/health > /dev/null 2>&1; do
+                sleep 10
+                echo "[trigger] Still waiting..."
+              done
+              echo "[trigger] Server is healthy!"
+              mkdir -p /var/mdl/outputs
+              
+              # ============================================================
+              # FPS BENCHMARK: measures pure frame emission rate
+              # Tests streaming pipeline with per-block timing breakdown
+              # ============================================================
+              echo ""
+              echo "============================================================"
+              echo "  ROLLING FORCING FPS BENCHMARK"
+              echo "  Model: Wan2.1-T2V-1.3B | TP=4 | Device: Trainium2"
+              echo "============================================================"
+              echo ""
+              
+              # Run benchmark for the configured frame count
+              echo "[benchmark] Running benchmark with 161 latent frames..."
+              RESPONSE=$(curl -sf --max-time 600 -X POST http://localhost:8000/benchmark \
+                -H "Content-Type: application/json" \
+                -d '{"prompt":"A cat walking on the beach at sunset, cinematic lighting, 4k","num_frames":161,"seed":42}')
+              
+              echo "$RESPONSE" | python3 -c "
+              import sys, json
+              
+              data = json.load(sys.stdin)
+              
+              print(f'')
+              print(f'┌─────────────────────────────────────────────────────────┐')
+              print(f'│  BENCHMARK RESULTS                                      │')
+              print(f'├─────────────────────────────────────────────────────────┤')
+              print(f'│  Pixel frames generated: {data[\"num_pixel_frames\"]:>6}                      │')
+              print(f'│  Latent frames input:    {data[\"num_latent_frames\"]:>6}                      │')
+              print(f'│  Blocks processed:       {data[\"num_blocks\"]:>6}                      │')
+              print(f'│  Total time:             {data[\"total_time_s\"]:>8.2f}s                   │')
+              print(f'│  T5 encode time:         {data[\"t5_encode_time_s\"]:>8.3f}s                   │')
+              print(f'│  Time-to-first-frame:    {data[\"ttff_s\"]:>8.3f}s                   │')
+              print(f'├─────────────────────────────────────────────────────────┤')
+              print(f'│  OVERALL FPS:            {data[\"overall_fps\"]:>8.2f} frames/sec         │')
+              print(f'│  STEADY-STATE FPS:       {data[\"steady_state_fps\"]:>8.2f} frames/sec         │')
+              print(f'│  Real-time ratio:        {data[\"realtime_ratio\"]:>8.3f}x (vs {data[\"playback_fps\"]}fps)     │')
+              print(f'│  Steady real-time ratio: {data[\"steady_realtime_ratio\"]:>8.3f}x (vs {data[\"playback_fps\"]}fps)     │')
+              print(f'└─────────────────────────────────────────────────────────┘')
+              print(f'')
+              print(f'Config: TP={data[\"config\"][\"tp_degree\"]}, '
+                    f'nfpb={data[\"config\"][\"num_frame_per_block\"]}, '
+                    f'steps={data[\"config\"][\"denoising_steps\"]}, '
+                    f'spatial={data[\"config\"][\"latent_spatial\"]}')
+              print(f'')
+              print(f'Per-block timing (showing FPS ramp-up curve):')
+              print(f'  {\"Block\":>5} | {\"DiT\":>7} | {\"VAE\":>7} | {\"Total\":>7} | {\"BlkFPS\":>7} | {\"CumFPS\":>7} | {\"Wall\":>6} | Curve')
+              print(f'  {\"─\"*5:>5}─┼─{\"─\"*7}─┼─{\"─\"*7}─┼─{\"─\"*7}─┼─{\"─\"*7}─┼─{\"─\"*7}─┼─{\"─\"*6}─┼─{\"─\"*20}')
+              
+              max_fps = max(b['block_fps'] for b in data['per_block']) if data['per_block'] else 1
+              for b in data['per_block']:
+                  bar_len = int(20 * b['block_fps'] / max_fps) if max_fps > 0 else 0
+                  bar = '█' * bar_len
+                  print(f'  {b[\"block\"]:>5} | {b[\"dit_ms\"]:>5.0f}ms | {b[\"vae_ms\"]:>5.0f}ms | {b[\"block_total_ms\"]:>5.0f}ms | {b[\"block_fps\"]:>6.2f} | {b[\"cumulative_fps\"]:>6.2f} | {b[\"wall_s\"]:>5.2f}s | {bar}')
+              
+              print(f'')
+              print(f'Key insights:')
+              if data['steady_state_fps'] >= data['playback_fps']:
+                  print(f'  ✅ Steady-state FPS ({data[\"steady_state_fps\"]:.1f}) >= playback FPS ({data[\"playback_fps\"]}) — REAL-TIME CAPABLE!')
+              else:
+                  speedup_needed = data['playback_fps'] / data['steady_state_fps']
+                  print(f'  ⚠️  Need {speedup_needed:.1f}x speedup to reach real-time ({data[\"playback_fps\"]}fps playback)')
+              
+              if data['ttff_s'] and data['ttff_s'] > 5:
+                  print(f'  ⏳ TTFF is {data[\"ttff_s\"]:.1f}s — ramp-up cost is significant for short videos')
+              
+              # Save results to file
+              with open('/var/mdl/outputs/benchmark_results.json', 'w') as f:
+                  json.dump(data, f, indent=2)
+              print(f'')
+              print(f'Results saved to /var/mdl/outputs/benchmark_results.json')
+              "
+              
+              echo ""
+              echo "[trigger] Benchmark complete!"
+              # Keep alive briefly so logs can be read
+              sleep 60
+          resources:
+            requests:
+              cpu: 1
+              memory: 1Gi
+            limits:
+              cpu: 2
+              memory: 2Gi
+          volumeMounts:
+            - name: 621547421844-ap-southeast-4-pvc
+              mountPath: /var/mdl
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Gi
+        - name: 621547421844-ap-southeast-4-pvc
+          persistentVolumeClaim:
+            claimName: 621547421844-ap-southeast-4-pvc
