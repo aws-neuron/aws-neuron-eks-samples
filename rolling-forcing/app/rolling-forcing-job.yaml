@@ -92,15 +92,11 @@ spec:
                 echo "NEFF cache disabled or empty - will compile fresh"
               fi
               
-              # Launch with torchrun for TP=4
-              # All 4 ranks load the DiT sharded across cores (ND0+ND1)
-              # Rank 0 hosts VAE, Rank 2 hosts T5, all run DiT
+              # Launch benchmark mode: loads pipeline, runs streaming inference,
+              # measures FPS, prints results, exits cleanly.
               export REPO_DIR=$(pwd)
               torchrun --nproc_per_node=4 --master_port=29500 \
-                inference_neuron_tp.py 2>&1
-              
-              # Keep pod alive for manual testing via port-forward
-              while :; do :; sleep 10; done
+                inference_neuron_tp.py --benchmark 2>&1
           resources:
             claims:
               - name: s-lnc2-trn2
@@ -166,112 +162,6 @@ spec:
                 secretKeyRef:
                   name: github-token
                   key: GITHUB_TOKEN
-          ports:
-            - containerPort: 8000
-              protocol: TCP
-        # Sidecar: waits for server health, then runs FPS benchmark
-        - name: trigger
-          image: 421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-d1c940d:latest
-          imagePullPolicy: IfNotPresent
-          command:
-            - /bin/bash
-            - "-c"
-            - |
-              set -euo pipefail
-              echo "[trigger] Waiting for inference server to be ready..."
-              until curl -sf http://localhost:8000/health > /dev/null 2>&1; do
-                sleep 10
-                echo "[trigger] Still waiting..."
-              done
-              echo "[trigger] Server is healthy!"
-              mkdir -p /var/mdl/outputs
-              
-              # ============================================================
-              # FPS BENCHMARK: measures pure frame emission rate
-              # Tests streaming pipeline with per-block timing breakdown
-              # ============================================================
-              echo ""
-              echo "============================================================"
-              echo "  ROLLING FORCING FPS BENCHMARK"
-              echo "  Model: Wan2.1-T2V-1.3B | TP=4 | Device: Trainium2"
-              echo "============================================================"
-              echo ""
-              
-              # Run benchmark for the configured frame count
-              echo "[benchmark] Running benchmark with 161 latent frames..."
-              RESPONSE=$(curl -sf --max-time 600 -X POST http://localhost:8000/benchmark \
-                -H "Content-Type: application/json" \
-                -d '{"prompt":"A cat walking on the beach at sunset, cinematic lighting, 4k","num_frames":161,"seed":42}')
-              
-              echo "$RESPONSE" | python3 -c "
-              import sys, json
-              
-              data = json.load(sys.stdin)
-              
-              print(f'')
-              print(f'┌─────────────────────────────────────────────────────────┐')
-              print(f'│  BENCHMARK RESULTS                                      │')
-              print(f'├─────────────────────────────────────────────────────────┤')
-              print(f'│  Pixel frames generated: {data[\"num_pixel_frames\"]:>6}                      │')
-              print(f'│  Latent frames input:    {data[\"num_latent_frames\"]:>6}                      │')
-              print(f'│  Blocks processed:       {data[\"num_blocks\"]:>6}                      │')
-              print(f'│  Total time:             {data[\"total_time_s\"]:>8.2f}s                   │')
-              print(f'│  T5 encode time:         {data[\"t5_encode_time_s\"]:>8.3f}s                   │')
-              print(f'│  Time-to-first-frame:    {data[\"ttff_s\"]:>8.3f}s                   │')
-              print(f'├─────────────────────────────────────────────────────────┤')
-              print(f'│  OVERALL FPS:            {data[\"overall_fps\"]:>8.2f} frames/sec         │')
-              print(f'│  STEADY-STATE FPS:       {data[\"steady_state_fps\"]:>8.2f} frames/sec         │')
-              print(f'│  Real-time ratio:        {data[\"realtime_ratio\"]:>8.3f}x (vs {data[\"playback_fps\"]}fps)     │')
-              print(f'│  Steady real-time ratio: {data[\"steady_realtime_ratio\"]:>8.3f}x (vs {data[\"playback_fps\"]}fps)     │')
-              print(f'└─────────────────────────────────────────────────────────┘')
-              print(f'')
-              print(f'Config: TP={data[\"config\"][\"tp_degree\"]}, '
-                    f'nfpb={data[\"config\"][\"num_frame_per_block\"]}, '
-                    f'steps={data[\"config\"][\"denoising_steps\"]}, '
-                    f'spatial={data[\"config\"][\"latent_spatial\"]}')
-              print(f'')
-              print(f'Per-block timing (showing FPS ramp-up curve):')
-              print(f'  {\"Block\":>5} | {\"DiT\":>7} | {\"VAE\":>7} | {\"Total\":>7} | {\"BlkFPS\":>7} | {\"CumFPS\":>7} | {\"Wall\":>6} | Curve')
-              print(f'  {\"─\"*5:>5}─┼─{\"─\"*7}─┼─{\"─\"*7}─┼─{\"─\"*7}─┼─{\"─\"*7}─┼─{\"─\"*7}─┼─{\"─\"*6}─┼─{\"─\"*20}')
-              
-              max_fps = max(b['block_fps'] for b in data['per_block']) if data['per_block'] else 1
-              for b in data['per_block']:
-                  bar_len = int(20 * b['block_fps'] / max_fps) if max_fps > 0 else 0
-                  bar = '█' * bar_len
-                  print(f'  {b[\"block\"]:>5} | {b[\"dit_ms\"]:>5.0f}ms | {b[\"vae_ms\"]:>5.0f}ms | {b[\"block_total_ms\"]:>5.0f}ms | {b[\"block_fps\"]:>6.2f} | {b[\"cumulative_fps\"]:>6.2f} | {b[\"wall_s\"]:>5.2f}s | {bar}')
-              
-              print(f'')
-              print(f'Key insights:')
-              if data['steady_state_fps'] >= data['playback_fps']:
-                  print(f'  ✅ Steady-state FPS ({data[\"steady_state_fps\"]:.1f}) >= playback FPS ({data[\"playback_fps\"]}) — REAL-TIME CAPABLE!')
-              else:
-                  speedup_needed = data['playback_fps'] / data['steady_state_fps']
-                  print(f'  ⚠️  Need {speedup_needed:.1f}x speedup to reach real-time ({data[\"playback_fps\"]}fps playback)')
-              
-              if data['ttff_s'] and data['ttff_s'] > 5:
-                  print(f'  ⏳ TTFF is {data[\"ttff_s\"]:.1f}s — ramp-up cost is significant for short videos')
-              
-              # Save results to file
-              with open('/var/mdl/outputs/benchmark_results.json', 'w') as f:
-                  json.dump(data, f, indent=2)
-              print(f'')
-              print(f'Results saved to /var/mdl/outputs/benchmark_results.json')
-              "
-              
-              echo ""
-              echo "[trigger] Benchmark complete!"
-              # Keep alive briefly so logs can be read
-              sleep 60
-          resources:
-            requests:
-              cpu: 1
-              memory: 1Gi
-            limits:
-              cpu: 2
-              memory: 2Gi
-          volumeMounts:
-            - name: 621547421844-ap-southeast-4-pvc
-              mountPath: /var/mdl
       volumes:
         - name: dshm
           emptyDir:

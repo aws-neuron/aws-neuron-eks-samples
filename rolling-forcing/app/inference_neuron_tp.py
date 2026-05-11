@@ -636,9 +636,171 @@ def run_server(state: PipelineState):
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
 
 
+# ─── Benchmark mode (no server) ──────────────────────────────────────────────
+
+def run_benchmark(state: PipelineState):
+    """Rank 0: run streaming pipeline directly, measure FPS, print results, exit."""
+    import json
+
+    num_frames = DEFAULT_NUM_FRAMES
+    seed = 42
+    prompt = "A cat walking on the beach at sunset, cinematic lighting, 4k"
+    fps = DEFAULT_FPS
+
+    logger.info("=" * 60)
+    logger.info("  ROLLING FORCING BENCHMARK")
+    logger.info(f"  Model: Wan2.1-T2V-1.3B | TP={TP_DEGREE} | Device: Trainium2")
+    logger.info(f"  Frames: {num_frames} | Seed: {seed}")
+    logger.info("=" * 60)
+
+    torch.manual_seed(seed)
+    overall_start = time.time()
+
+    # Step 1: Broadcast command + metadata to workers (streaming mode)
+    cmd = CMD_STREAM.to(NEURON_DEVICE)
+    dist.broadcast(cmd, src=0)
+    meta = torch.tensor([num_frames, seed, 0], dtype=torch.long, device=NEURON_DEVICE)
+    dist.broadcast(meta, src=0)
+
+    # Step 2: Tokenize and broadcast
+    ids, mask = state.tokenizer([prompt], return_mask=True, add_special_tokens=True)
+    ids_device = ids.to(torch.long).to(NEURON_DEVICE)
+    mask_device = mask.to(torch.long).to(NEURON_DEVICE)
+    dist.broadcast(ids_device, src=0)
+    dist.broadcast(mask_device, src=0)
+
+    # Step 3: Receive T5 embeddings
+    t5_start = time.time()
+    prompt_embeds = torch.zeros(1, 512, 4096, dtype=torch.bfloat16, device=NEURON_DEVICE)
+    dist.broadcast(prompt_embeds, src=T5_RANK)
+    t5_time = time.time() - t5_start
+
+    # Step 4: Prepare noise
+    noise = torch.randn(
+        1, num_frames, 16, state.latent_h, state.latent_w,
+        dtype=torch.bfloat16
+    ).to(NEURON_DEVICE)
+    conditional_dict = {"prompt_embeds": prompt_embeds}
+
+    # Step 5: Streaming inference with per-block timing
+    per_block = []
+    total_pixel_frames = 0
+    block_idx = 0
+    ttff = None
+
+    for start_frame, latent_block in state.dit_pipeline.inference_rolling_forcing_streaming(
+        noise, conditional_dict
+    ):
+        block_start = time.time()
+
+        # VAE decode
+        vae_start = time.time()
+        frames_np = decode_latents(state, latent_block.cpu())
+        vae_time = time.time() - vae_start
+
+        block_total = time.time() - block_start
+        n_frames = len(frames_np)
+        total_pixel_frames += n_frames
+
+        if ttff is None:
+            ttff = time.time() - overall_start
+
+        block_fps = n_frames / block_total if block_total > 0 else 0
+        cumulative_fps = total_pixel_frames / (time.time() - overall_start)
+
+        per_block.append({
+            "block": block_idx,
+            "dit_ms": 0,  # DiT time included in streaming yield
+            "vae_ms": vae_time * 1000,
+            "block_total_ms": block_total * 1000,
+            "block_fps": block_fps,
+            "cumulative_fps": cumulative_fps,
+            "wall_s": time.time() - overall_start,
+        })
+        block_idx += 1
+
+    total_time = time.time() - overall_start
+    overall_fps = total_pixel_frames / total_time if total_time > 0 else 0
+
+    # Steady-state: exclude first block (cold start / compilation)
+    if len(per_block) > 1:
+        steady_blocks = per_block[1:]
+        steady_time = sum(b["block_total_ms"] for b in steady_blocks) / 1000
+        steady_frames = sum(1 for _ in steady_blocks)  # approximate
+        steady_state_fps = overall_fps  # Use cumulative as approximation
+        if steady_time > 0:
+            steady_state_fps = (total_pixel_frames - per_block[0].get("block_fps", 0)) / steady_time
+    else:
+        steady_state_fps = overall_fps
+
+    realtime_ratio = overall_fps / fps if fps > 0 else 0
+    steady_realtime_ratio = steady_state_fps / fps if fps > 0 else 0
+
+    results = {
+        "num_pixel_frames": total_pixel_frames,
+        "num_latent_frames": num_frames,
+        "num_blocks": block_idx,
+        "total_time_s": total_time,
+        "t5_encode_time_s": t5_time,
+        "ttff_s": ttff or 0,
+        "overall_fps": overall_fps,
+        "steady_state_fps": steady_state_fps,
+        "realtime_ratio": realtime_ratio,
+        "steady_realtime_ratio": steady_realtime_ratio,
+        "playback_fps": fps,
+        "config": {
+            "tp_degree": TP_DEGREE,
+            "num_frame_per_block": getattr(state.dit_pipeline, 'num_frame_per_block', 0),
+            "denoising_steps": getattr(state.dit_pipeline, 'denoising_steps', 5),
+            "latent_spatial": f"{state.latent_h}x{state.latent_w}",
+        },
+        "per_block": per_block,
+    }
+
+    # Print results
+    print()
+    print("┌─────────────────────────────────────────────────────────┐")
+    print("│  BENCHMARK RESULTS                                      │")
+    print("├─────────────────────────────────────────────────────────┤")
+    print(f"│  Pixel frames generated: {total_pixel_frames:>6}                      │")
+    print(f"│  Latent frames input:    {num_frames:>6}                      │")
+    print(f"│  Blocks processed:       {block_idx:>6}                      │")
+    print(f"│  Total time:             {total_time:>8.2f}s                   │")
+    print(f"│  T5 encode time:         {t5_time:>8.3f}s                   │")
+    print(f"│  Time-to-first-frame:    {(ttff or 0):>8.3f}s                   │")
+    print("├─────────────────────────────────────────────────────────┤")
+    print(f"│  OVERALL FPS:            {overall_fps:>8.2f} frames/sec         │")
+    print(f"│  STEADY-STATE FPS:       {steady_state_fps:>8.2f} frames/sec         │")
+    print(f"│  Real-time ratio:        {realtime_ratio:>8.3f}x (vs {fps}fps)     │")
+    print(f"│  Steady real-time ratio: {steady_realtime_ratio:>8.3f}x (vs {fps}fps)     │")
+    print("└─────────────────────────────────────────────────────────┘")
+    print()
+
+    if steady_state_fps >= fps:
+        print(f"  ✅ Steady-state FPS ({steady_state_fps:.1f}) >= playback FPS ({fps}) — REAL-TIME CAPABLE!")
+    else:
+        speedup_needed = fps / steady_state_fps if steady_state_fps > 0 else float('inf')
+        print(f"  ⚠️  Need {speedup_needed:.1f}x speedup to reach real-time ({fps}fps playback)")
+
+    print()
+    print(json.dumps(results, indent=2))
+    print()
+    logger.info("Benchmark complete!")
+
+    # Signal workers to exit
+    cmd = CMD_SHUTDOWN.to(NEURON_DEVICE)
+    dist.broadcast(cmd, src=0)
+
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--benchmark", action="store_true",
+                        help="Run benchmark mode: generate video directly, measure FPS, exit")
+    args, _ = parser.parse_known_args()
+
     rank, world_size = setup_distributed()
 
     if rank == 0:
@@ -650,6 +812,7 @@ def main():
         logger.info(f"  VAE rank: {VAE_RANK} (ND{VAE_RANK // 2})")
         logger.info(f"  Config: {CONFIG_PATH}")
         logger.info(f"  Model: {MODEL_PATH}")
+        logger.info(f"  Mode: {'BENCHMARK' if args.benchmark else 'SERVER'}")
         logger.info("=" * 60)
 
     # All ranks load DiT (TP-sharded)
@@ -658,8 +821,10 @@ def main():
     state = load_pipeline(rank, world_size)
 
     if rank == 0:
-        # Rank 0 runs the FastAPI server
-        run_server(state)
+        if args.benchmark:
+            run_benchmark(state)
+        else:
+            run_server(state)
     else:
         # Ranks 1-3 enter the worker loop
         worker_loop(state)
