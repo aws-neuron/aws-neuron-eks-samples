@@ -1,0 +1,46 @@
+#torch==2.9.1
+#torchvision==0.24.1
+#torchaudio==2.9.1
+opencv-python>=4.9.0.80
+diffusers==0.31.0
+transformers>=4.49.0
+tokenizers>=0.20.3
+accelerate>=1.1.1
+tqdm
+imageio
+easydict
+ftfy
+dashscope
+imageio-ffmpeg
+#numpy==1.24.4
+wandb
+omegaconf
+einops
+av==13.1.0
+opencv-python
+open_clip_torch
+starlette
+pycocotools
+lmdb
+matplotlib
+sentencepiece
+pydantic==2.10.6
+scikit-image
+huggingface_hub[cli]
+dominate
+# Optional dependencies removed (not needed for device-agnostic operation):
+# - nvidia-tensorrt, pycuda (CUDA-specific)
+# - onnx, onnxruntime, onnxscript, onnxconverter_common (TensorRT-dependent)
+#
+# Optional dependencies for specific hardware:
+# For AWS Neuron (Trainium2/Inferentia2):
+#   pip install neuronx-cc==2.* torch-neuronx torchvision
+# For CUDA with Flash Attention (optional, improves performance):
+#   pip install flash-attn
+flask
+flask-socketio
+#torchao
+tensorboard
+ninja
+packaging
+gradio>=4.44.0
