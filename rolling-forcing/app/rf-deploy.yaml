@@ -1,0 +1,219 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rf
+  namespace: default
+spec:
+  selector:
+    app: rf
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: NodePort
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rf
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rf
+  template:
+    metadata:
+      labels:
+        app: rf
+    spec:
+      nodeSelector:
+        node-type: trn2
+      resourceClaims:
+        - name: s-lnc2-trn2
+          resourceClaimTemplateName: s-lnc2-trn2
+      containers:
+        - name: app
+          image: 421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-d1c940d:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - "-exc"
+            - |
+              set -euxo pipefail
+              
+              # Clone the video-streaming-develop repository (wan1.3b-tp branch)
+              git clone -b wan1.3b-tp https://yahavb:${GITHUB_TOKEN}@github.com/yahavb/video-streaming-develop.git
+              
+              export RF_DEVICE_BACKEND=neuron
+              cd video-streaming-develop
+              
+              # Install dependencies
+              uv pip install omegaconf einops imageio imageio-ffmpeg pillow ftfy regex sentencepiece transformers diffusers accelerate av==13.1.0
+              uv pip install fastapi uvicorn python-multipart
+              uv pip install "setuptools<81"
+              uv pip install git+https://github.com/pytorch/vision.git@v0.25.0 --no-deps --no-cache --no-build-isolation
+              
+              # /var/mdl is S3-backed. Use single tar file to avoid per-file S3 overhead
+              WAN_1_3B_TAR="/var/mdl/wan_models/Wan2.1-T2V-1.3B.tar"
+              
+              # Copy Wan 1.3B model as single tar from S3 cache to local disk
+              mkdir -p wan_models
+              if [[ -f "$WAN_1_3B_TAR" ]]; then
+                echo "Copying Wan 1.3B tar from S3 cache..."
+                cp "$WAN_1_3B_TAR" /tmp/Wan2.1-T2V-1.3B.tar
+                echo "Extracting..."
+                tar xf /tmp/Wan2.1-T2V-1.3B.tar -C wan_models/
+                rm -f /tmp/Wan2.1-T2V-1.3B.tar
+                echo "Done!"
+              else
+                echo "Downloading Wan 1.3B model from HuggingFace to local disk..."
+                python3 -c "from huggingface_hub import snapshot_download; snapshot_download('Wan-AI/Wan2.1-T2V-1.3B', local_dir='wan_models/Wan2.1-T2V-1.3B', local_dir_use_symlinks=False)"
+                echo "Creating tar archive for S3 cache (avoids per-file overhead next time)..."
+                tar cf /tmp/Wan2.1-T2V-1.3B.tar -C wan_models Wan2.1-T2V-1.3B
+                mkdir -p "$(dirname $WAN_1_3B_TAR)"
+                cp /tmp/Wan2.1-T2V-1.3B.tar "$WAN_1_3B_TAR"
+                rm -f /tmp/Wan2.1-T2V-1.3B.tar
+                echo "Cached tar to S3!"
+              fi
+              
+              echo "Model weights ready!"
+              
+              # Copy RollingForcing DMD checkpoint from S3 cache to local disk
+              # This is the distilled checkpoint required for 5-step denoising
+              RF_CACHE="/var/mdl/checkpoints/rolling_forcing_dmd.pt"
+              mkdir -p checkpoints
+              if [[ -f "$RF_CACHE" ]]; then
+                echo "Copying RollingForcing checkpoint from S3 cache to local disk..."
+                cp "$RF_CACHE" checkpoints/rolling_forcing_dmd.pt
+                echo "Copy complete!"
+              else
+                echo "Downloading RollingForcing checkpoint from HuggingFace to local disk..."
+                python3 -c "from huggingface_hub import hf_hub_download; hf_hub_download('TencentARC/RollingForcing', 'checkpoints/rolling_forcing_dmd.pt', local_dir='.')"
+                echo "Caching to S3 for next time..."
+                mkdir -p "$(dirname $RF_CACHE)"
+                cp checkpoints/rolling_forcing_dmd.pt "$RF_CACHE"
+              fi
+              
+              # ========================================
+              # NEFF Cache: controlled by USE_NEFF_CACHE env var
+              # ========================================
+              NEFF_LOCAL="/tmp/neff_cache"
+              NEFF_S3="/var/mdl/neff_cache_1.3b"
+              mkdir -p "$NEFF_LOCAL"
+              
+              if [[ "${USE_NEFF_CACHE:-true}" == "true" && -d "$NEFF_S3" && -n "$(ls -A $NEFF_S3 2>/dev/null)" ]]; then
+                echo "Loading NEFF cache from S3..."
+                cp -r "$NEFF_S3/"* "$NEFF_LOCAL/"
+                echo "NEFF cache loaded ($(du -sh $NEFF_LOCAL | cut -f1))"
+              else
+                echo "NEFF cache disabled or empty - will compile fresh"
+              fi
+              
+              # Launch with torchrun for TP=4
+              # All 4 ranks load the DiT sharded across cores (ND0+ND1)
+              # Rank 0 hosts VAE, Rank 2 hosts T5, all run DiT
+              export REPO_DIR=$(pwd)
+              torchrun --nproc_per_node=4 --master_port=29500 \
+                inference_neuron_tp.py 2>&1
+              while :; do :; sleep 10; done
+          resources:
+            claims:
+              - name: s-lnc2-trn2
+            requests:
+              cpu: 44
+              memory: 440Gi
+            limits:
+              cpu: 44
+              memory: 440Gi
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: 621547421844-ap-southeast-4-pvc
+              mountPath: /var/mdl
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: NEURON_RT_LOG_LEVEL
+              value: "ERROR"
+            - name: NEURON_CC_LOG_LEVEL
+              value: "ERROR"
+            - name: TORCH_NEURONX_LOG_LEVEL
+              value: "ERROR"
+            - name: RF_DEVICE_BACKEND
+              value: "neuron"
+            - name: NEURON_LOGICAL_NC_CONFIG
+              value: "2"
+            - name: NEURON_RT_DBG_INTRA_RDH_CHANNEL_BUFFER_SIZE
+              value: "134217728"
+            - name: NEURON_CC_FLAGS
+              value: "--model-type=transformer"
+            - name: USE_NKI_KERNELS
+              value: "true"
+            - name: USE_NEFF_CACHE
+              value: "false"
+            - name: VALIDATE_PIPELINE
+              value: "1"
+            - name: CONFIG_PATH
+              value: "configs/default_config.yaml"
+            - name: MODEL_PATH
+              value: "wan_models/Wan2.1-T2V-1.3B"
+            - name: VAE_PATH
+              value: "wan_models/Wan2.1-T2V-1.3B/Wan2.1_VAE.pth"
+            - name: CHECKPOINT_PATH
+              value: "checkpoints/rolling_forcing_dmd.pt"
+            - name: DEFAULT_NUM_FRAMES
+              value: "81"
+            - name: DEFAULT_FPS
+              value: "16"
+            - name: TP_DEGREE
+              value: "4"
+            - name: T5_RANK
+              value: "2"
+            - name: DEVICE
+              value: "neuron"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-token
+                  key: GITHUB_TOKEN
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 30
+            timeoutSeconds: 100
+            failureThreshold: 475
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 600
+            periodSeconds: 300
+            successThreshold: 1
+            failureThreshold: 1000
+            timeoutSeconds: 60
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Gi
+        - name: 621547421844-ap-southeast-4-pvc
+          persistentVolumeClaim:
+            claimName: 621547421844-ap-southeast-4-pvc

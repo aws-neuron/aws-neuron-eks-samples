@@ -1,0 +1,12 @@
+wan_models
+checkpoints
+*.pyc
+*.mp4
+*.pt
+op_logs
+text_embeds
+output_latents
+output_videos
+result*
+*pftrace
+profile

@@ -1,0 +1,36 @@
+independent_first_frame: false
+warp_denoising_step: false
+weight_decay: 0.01
+same_step_across_blocks: true
+discriminator_lr_multiplier: 1.0
+last_step_only: false
+i2v: false
+num_training_frames: 27
+gc_interval: 100
+context_noise: 0
+causal: true
+denoising_step_list:
+- 1000
+- 800
+- 600
+- 400
+- 200
+
+ckpt_step: 0
+prompt_name: MovieGenVideoBench
+prompt_path: prompts/MovieGenVideoBench.txt
+eval_first_n: 64
+num_samples: 1
+height: 480
+width: 832
+num_frames: 81
+
+# Medium resolution: 44x78 latent -> ~352x624 video
+# frame_seq_length = (44*78)//4 = 858
+image_or_video_shape:
+- 1
+- 21
+- 16
+- 44
+- 78
+num_frame_per_block: 3

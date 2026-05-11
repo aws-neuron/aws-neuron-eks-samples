@@ -1,0 +1,43 @@
+# Rolling Forcing EKS Cluster Configuration
+# This sample demonstrates how to create an EKS cluster
+# suitable for running Rolling Forcing video generation on AWS Trainium2
+#
+# Prerequisites:
+#   - eksctl installed
+#   - AWS CLI configured with appropriate permissions
+#
+# Create: eksctl create cluster -f eks-cluster.yaml
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: rolling-forcing-sample
+  region: us-east-1        # Change to your preferred region with Trainium2 availability
+  version: "1.35"
+
+vpc:
+  nat:
+    gateway: Single
+  clusterEndpoints:
+    publicAccess: true
+    privateAccess: true
+
+managedNodeGroups:
+  - name: system-ng
+    instanceType: m5.xlarge
+    desiredCapacity: 2
+    minSize: 2
+    maxSize: 3
+    privateNetworking: true
+    amiFamily: AmazonLinux2023
+    labels:
+      node-type: m5
+
+addons:
+  - name: vpc-cni
+  - name: coredns
+  - name: kube-proxy
+  - name: metrics-server
+  - name: aws-mountpoint-s3-csi-driver
+  - name: eks-node-monitoring-agent
