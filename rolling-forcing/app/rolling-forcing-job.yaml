@@ -95,7 +95,9 @@ spec:
               # Launch benchmark mode: loads pipeline, runs streaming inference,
               # measures FPS, prints results, exits cleanly.
               export REPO_DIR=$(pwd)
-              torchrun --nproc_per_node=8 --master_port=29500 \
+              # 1.3B has 12 heads → max TP=4 (12/4=3 heads/rank). TP=8 won't divide.
+              # 8 NCs available: 4 for DiT TP, remaining 4 idle (or future T5/VAE).
+              torchrun --nproc_per_node=4 --master_port=29500 \
                 inference_neuron_tp.py --benchmark 2>&1
           resources:
             claims:
@@ -147,7 +149,7 @@ spec:
             - name: DEFAULT_FPS
               value: "16"
             - name: TP_DEGREE
-              value: "8"
+              value: "4"
             - name: T5_RANK
               value: "2"
             - name: DEVICE
