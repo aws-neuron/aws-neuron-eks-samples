@@ -143,26 +143,13 @@ def main():
     # Move latents to device
     latents = latents.to(args.device)
 
-    # Compile VAE decode for Neuron
-    if args.device == "neuron" and not args.no_compile:
-        import time
-        print("[run_vae_decode] Compiling VAE with torch.compile(backend='neuron')...")
-        
-        # Compile the inner model's decode function
-        # fullgraph=False allows graph breaks at non-tensor ops (e.g., string comparisons in cache)
-        vae.model.decode = torch.compile(
-            vae.model.decode,
-            backend="neuron",
-            fullgraph=False,
-            dynamic=False
-        )
-        
-        # Warmup / compilation pass
-        print("[run_vae_decode] Warmup pass (NEFF compilation)...")
-        start = time.time()
-        with torch.no_grad():
-            _ = vae.decode_to_pixel(latents, use_cache=False)
-        print(f"[run_vae_decode] Compilation done in {time.time() - start:.2f}s")
+    # NKI kernels handle attention/conv on Neuron in eager mode.
+    # torch.compile is NOT used — it creates 400+ NEFFs and OOMs.
+    # The AttentionBlock in vae.py dispatches to NKI kernels automatically
+    # when tensors are on Neuron device.
+    if args.device == "neuron":
+        print("[run_vae_decode] Using NKI kernels for VAE attention (eager mode, no compile)")
+        print("[run_vae_decode] Conv3d runs in Neuron eager, attention via NKI vae_self_attention")
 
     # Decode
     print("[run_vae_decode] Decoding latents to video...")

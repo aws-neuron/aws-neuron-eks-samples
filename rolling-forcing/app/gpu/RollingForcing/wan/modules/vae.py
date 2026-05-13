@@ -220,9 +220,15 @@ class ResidualBlock(nn.Module):
         return x + h
 
 
+def _is_neuron_tensor(t):
+    """Check if tensor is on a Neuron device."""
+    return 'neuron' in str(t.device) or 'xla' in str(t.device)
+
+
 class AttentionBlock(nn.Module):
     """
     Causal self-attention with a single head.
+    Dispatches to NKI kernels when running on Neuron.
     """
 
     def __init__(self, dim):
@@ -242,22 +248,75 @@ class AttentionBlock(nn.Module):
         b, c, t, h, w = x.size()
         x = rearrange(x, 'b c t h w -> (b t) c h w')
         x = self.norm(x)
-        # compute query, key, value
+
+        if _is_neuron_tensor(x):
+            return self._forward_neuron(x, identity, b, c, t, h, w)
+        else:
+            return self._forward_cpu(x, identity, b, c, t, h, w)
+
+    def _forward_cpu(self, x, identity, b, c, t, h, w):
+        """Standard PyTorch path (CPU/GPU)."""
         q, k, v = self.to_qkv(x).reshape(b * t, 1, c * 3,
                                          -1).permute(0, 1, 3,
                                                      2).contiguous().chunk(
                                                          3, dim=-1)
-
-        # apply attention
-        x = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-        )
+        x = F.scaled_dot_product_attention(q, k, v)
         x = x.squeeze(1).permute(0, 2, 1).reshape(b * t, c, h, w)
-
-        # output
         x = self.proj(x)
+        x = rearrange(x, '(b t) c h w-> b c t h w', t=t)
+        return x + identity
+
+    def _forward_neuron(self, x, identity, b, c, t, h, w):
+        """NKI kernel path for Neuron."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'kernels'))
+        from vae_attention import vae_self_attention
+        from vae_conv2d import vae_conv2d_k1
+
+        BT = b * t
+        HW = h * w
+        dtype = x.dtype
+
+        # QKV via NKI 1x1 conv (matmul)
+        x_2d = x.reshape(BT, c, HW)
+        qkv_weight = self.to_qkv.weight.reshape(c * 3, c)  # [3C, C]
+        qkv_bias = self.to_qkv.bias.reshape(c * 3, 1) if self.to_qkv.bias is not None else None
+
+        qkv_out = torch.zeros(BT, c * 3, HW, dtype=dtype, device=x.device)
+        for i in range(BT):
+            qkv_out[i] = vae_conv2d_k1(x_2d[i], qkv_weight.t().contiguous(), qkv_bias, HW)
+
+        # Reshape to attention format: [BT, 1, HW, C]
+        q, k, v = qkv_out.reshape(BT, 1, c * 3, HW).permute(0, 1, 3, 2).contiguous().chunk(3, dim=-1)
+
+        # NKI self-attention
+        softmax_scale = 1.0 / (c ** 0.5)
+        identity_mat = torch.eye(c // 128 * 128, dtype=dtype, device=x.device)
+        if identity_mat.shape[0] < c:
+            identity_mat = torch.eye(c, dtype=dtype, device=x.device)
+        identity_mat = identity_mat[:c // 128 * 128, :c // 128 * 128] if c % 128 == 0 else torch.eye(c, dtype=dtype, device=x.device)
+
+        # For NKI: q[BT, 1, HW, C] → process per batch
+        attn_out = torch.zeros(BT, 1, HW, c, dtype=dtype, device=x.device)
+        id_mat = torch.eye(128, dtype=dtype, device=x.device)
+        for i in range(BT):
+            qi = q[i]  # [1, HW, C]
+            ki = k[i]  # [1, HW, C]
+            vi = v[i].permute(0, 2, 1).contiguous()  # [1, C, HW] for NKI
+            attn_out[i] = vae_self_attention(qi, ki, vi, id_mat, softmax_scale).unsqueeze(0)
+
+        # Reshape back: [BT, C, HW] → [BT, C, H, W]
+        x = attn_out.squeeze(1).permute(0, 2, 1).reshape(BT, c, h, w)
+
+        # Output projection via NKI 1x1 conv
+        proj_weight = self.proj.weight.reshape(c, c)  # [C_out, C_in]
+        proj_bias = self.proj.bias.reshape(c, 1) if self.proj.bias is not None else None
+        x_2d = x.reshape(BT, c, HW)
+        proj_out = torch.zeros(BT, c, HW, dtype=dtype, device=x.device)
+        for i in range(BT):
+            proj_out[i] = vae_conv2d_k1(x_2d[i], proj_weight.t().contiguous(), proj_bias, HW)
+
+        x = proj_out.reshape(BT, c, h, w)
         x = rearrange(x, '(b t) c h w-> b c t h w', t=t)
         return x + identity
 
