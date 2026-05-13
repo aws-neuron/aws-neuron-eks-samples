@@ -14,8 +14,8 @@ spec:
       nodeSelector:
         node.kubernetes.io/instance-type: trn2.48xlarge
       resourceClaims:
-        - name: s-lnc2-trn2
-          resourceClaimTemplateName: s-lnc2-trn2
+        - name: m-trn2
+          resourceClaimTemplateName: m-trn2
       containers:
         - name: inference
           image: 421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-d1c940d:latest
@@ -95,11 +95,11 @@ spec:
               # Launch benchmark mode: loads pipeline, runs streaming inference,
               # measures FPS, prints results, exits cleanly.
               export REPO_DIR=$(pwd)
-              torchrun --nproc_per_node=4 --master_port=29500 \
+              torchrun --nproc_per_node=8 --master_port=29500 \
                 inference_neuron_tp.py --benchmark 2>&1
           resources:
             claims:
-              - name: s-lnc2-trn2
+              - name: m-trn2
             requests:
               cpu: 44
               memory: 440Gi
@@ -147,7 +147,7 @@ spec:
             - name: DEFAULT_FPS
               value: "16"
             - name: TP_DEGREE
-              value: "4"
+              value: "8"
             - name: T5_RANK
               value: "2"
             - name: DEVICE
