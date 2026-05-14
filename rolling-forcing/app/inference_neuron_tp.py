@@ -85,8 +85,11 @@ TP_DEGREE = int(os.environ.get("TP_DEGREE", "4"))
 # T5 encoder rank — placed on rank 2 (ND1) to separate from VAE (rank 0, ND0).
 # This avoids T5 + VAE competing for the same HBM bank.
 T5_RANK = int(os.environ.get("T5_RANK", "2"))
-# VAE decoder rank
-VAE_RANK = 0
+# VAE TP: how many ranks to shard the VAE decoder across (1=single rank, 2=2-way TP)
+VAE_TP_DEGREE = int(os.environ.get("VAE_TP_DEGREE", "1"))
+# VAE decoder ranks — first VAE_TP_DEGREE ranks (e.g. [0] or [0,1])
+VAE_RANKS = list(range(VAE_TP_DEGREE))
+VAE_RANK = 0  # primary VAE rank (for backward compat)
 
 # ─── Distributed setup ────────────────────────────────────────────────────────
 
@@ -238,15 +241,31 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
         logger.info(f"  Compiled sub-modules: patch_embed, text_embed, time_embed, time_proj, head, FFN×{len(dit_model.blocks)}")
         logger.info(f"  NKI kernels: self_attn, cross_attn, rope (via wrap_nki HOP)")
 
-    # ── Load VAE on VAE_RANK (rank 0, ND0 — separate HBM bank from T5) ──────
-    if rank == VAE_RANK:
-        logger.info(f"Loading VAE (rank {VAE_RANK}, on Neuron with torch.compile)...")
-        from wan.modules.vae import _video_vae
+    # ── Load VAE (TP-aware: shard across VAE_RANKS or single rank) ───────────
+    if VAE_TP_DEGREE > 1:
+        # Multi-rank VAE TP: load on all VAE_RANKS, shard decoder
+        from models.vae_tp import create_vae_tp_group, shard_vae_model_tp
+        vae_tp_group = create_vae_tp_group(VAE_RANKS)
 
-        state.vae_model = _video_vae(pretrained_path=VAE_PATH, z_dim=16).eval().requires_grad_(False)
-        state.vae_model = state.vae_model.to(dtype=torch.bfloat16, device=NEURON_DEVICE)
-        state.vae_model = torch.compile(state.vae_model, backend='neuron', dynamic=False)
-        logger.info(f"VAE loaded on Neuron with torch.compile (rank {VAE_RANK})")
+        if rank in VAE_RANKS:
+            vae_tp_rank = VAE_RANKS.index(rank)
+            logger.info(f"Loading VAE with TP={VAE_TP_DEGREE} (global_rank={rank}, vae_tp_rank={vae_tp_rank})...")
+            from wan.modules.vae import _video_vae
+
+            state.vae_model = _video_vae(pretrained_path=VAE_PATH, z_dim=16).eval().requires_grad_(False)
+            shard_vae_model_tp(state.vae_model, tp_rank=vae_tp_rank, tp_degree=VAE_TP_DEGREE)
+            state.vae_model = state.vae_model.to(dtype=torch.bfloat16, device=NEURON_DEVICE)
+            logger.info(f"VAE TP-sharded on Neuron (rank {rank}, vae_tp_rank={vae_tp_rank})")
+    else:
+        # Single-rank VAE (original path)
+        if rank == VAE_RANK:
+            logger.info(f"Loading VAE (rank {VAE_RANK}, on Neuron with torch.compile)...")
+            from wan.modules.vae import _video_vae
+
+            state.vae_model = _video_vae(pretrained_path=VAE_PATH, z_dim=16).eval().requires_grad_(False)
+            state.vae_model = state.vae_model.to(dtype=torch.bfloat16, device=NEURON_DEVICE)
+            state.vae_model = torch.compile(state.vae_model, backend='neuron', dynamic=False)
+            logger.info(f"VAE loaded on Neuron with torch.compile (rank {VAE_RANK})")
 
     mean = torch.tensor([
         -0.7571, -0.7089, -0.9113, 0.1075, -0.1745, 0.9653, -0.1517, 1.5508,
@@ -258,8 +277,8 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
         3.2687, 2.1526, 2.8652, 1.5579, 1.6382, 1.1253, 2.8251, 1.9160
     ], dtype=torch.bfloat16)
 
-    # VAE scale must be on same device as VAE model (Neuron for VAE_RANK)
-    if rank == VAE_RANK:
+    # VAE scale must be on same device as VAE model (Neuron for VAE ranks)
+    if rank in VAE_RANKS:
         state.vae_scale = [mean.to(NEURON_DEVICE), (1.0 / std).to(NEURON_DEVICE)]
     else:
         state.vae_scale = [mean, 1.0 / std]
@@ -422,12 +441,22 @@ def worker_loop(state: PipelineState):
             if cmd.item() == CMD_STREAM.item():
                 # Streaming: rank 0 calls inference_rolling_forcing_streaming,
                 # workers must call the same to stay in all-reduce lockstep
-                for _ in state.dit_pipeline.inference_rolling_forcing_streaming(
+                for start_frame, latent_block in state.dit_pipeline.inference_rolling_forcing_streaming(
                     noise, conditional_dict
                 ):
-                    pass  # Workers don't decode, just participate in DiT TP
+                    # VAE TP workers must participate in VAE decode (all-reduce ops)
+                    if VAE_TP_DEGREE > 1 and rank in VAE_RANKS and state.vae_model is not None:
+                        _ = decode_latents(state, latent_block.cpu())
             else:
                 _ = run_dit_inference(state, noise, conditional_dict)
+                # VAE TP workers participate in non-streaming decode too
+                if VAE_TP_DEGREE > 1 and rank in VAE_RANKS and state.vae_model is not None:
+                    # Rank 0 will broadcast latents to VAE TP workers — but in the
+                    # current flow rank 0 calls decode_latents directly. The all-reduce
+                    # inside RowParallelCausalConv3d requires all VAE ranks to call decode.
+                    # For non-streaming, rank 0 calls decode after run_dit_inference,
+                    # so workers need a matching decode call. We receive latents via broadcast.
+                    pass  # TODO: need latent broadcast for non-streaming VAE TP
 
         elif cmd.item() == CMD_IDLE.item():
             continue
