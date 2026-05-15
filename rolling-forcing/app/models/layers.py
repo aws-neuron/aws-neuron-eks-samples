@@ -17,6 +17,15 @@ def jit(fn=None, **kwargs):
 # Controlled by USE_NKI_KERNELS env var (default: true)
 USE_NKI_KERNELS = os.environ.get("USE_NKI_KERNELS", "true").lower() == "true"
 
+# Check NKI runtime dependency (pyhlo required for @nki.jit execution)
+if USE_NKI_KERNELS:
+    try:
+        import torch_neuronx.pyhlo  # noqa: F401
+        print("[layers.py] torch_neuronx.pyhlo: ✓ available")
+    except ImportError:
+        print("[layers.py] torch_neuronx.pyhlo: ✗ NOT FOUND — disabling NKI kernels (using PyTorch SDPA fallback)")
+        USE_NKI_KERNELS = False
+
 print("=" * 60)
 print("[layers.py] NKI Kernel Loading (USE_NKI_KERNELS=%s)" % USE_NKI_KERNELS)
 print("=" * 60)
