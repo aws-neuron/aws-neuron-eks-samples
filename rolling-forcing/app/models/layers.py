@@ -26,11 +26,9 @@ NKI_AVAILABLE = False
 wan_cross_attn = None
 if USE_NKI_KERNELS:
     try:
-        from torch_neuronx.nki_hop import wrap_nki
-        from kernels.cross_attention import wan_cross_attn
-        wan_cross_attn = wrap_nki(wan_cross_attn)
+        from kernels.cross_attention import wan_cross_attn  # already @nki.jit decorated
         NKI_AVAILABLE = True
-        print("  [1/4] kernels/cross_attention.py  ✓ LOADED")
+        print("  [1/4] kernels/cross_attention.py  ✓ LOADED (@nki.jit direct)")
     except Exception as e:
         print(f"  [1/4] kernels/cross_attention.py  ✗ FAILED: {e}")
 else:
@@ -41,11 +39,9 @@ ROPE_NKI_AVAILABLE = False
 causal_rope_rotation_nki = None
 if USE_NKI_KERNELS:
     try:
-        from torch_neuronx.nki_hop import wrap_nki as _wrap_nki_rope
-        from kernels.rope import causal_rope_rotation as _causal_rope_rotation
-        causal_rope_rotation_nki = _wrap_nki_rope(_causal_rope_rotation)
+        from kernels.rope import causal_rope_rotation as causal_rope_rotation_nki  # already @nki.jit
         ROPE_NKI_AVAILABLE = True
-        print("  [2/4] kernels/rope.py              ✓ LOADED")
+        print("  [2/4] kernels/rope.py              ✓ LOADED (@nki.jit direct)")
     except Exception as e:
         print(f"  [2/4] kernels/rope.py              ✗ FAILED: {e}")
 else:
@@ -56,11 +52,9 @@ SELF_ATTN_NKI_AVAILABLE = False
 wan_flash_self_attn_nki = None
 if USE_NKI_KERNELS:
     try:
-        from torch_neuronx.nki_hop import wrap_nki as _wrap_nki_self_attn
-        from kernels.self_attention import wan_flash_self_attn as _wan_flash_self_attn
-        wan_flash_self_attn_nki = _wrap_nki_self_attn(_wan_flash_self_attn)
+        from kernels.self_attention import wan_flash_self_attn as wan_flash_self_attn_nki  # already @nki.jit
         SELF_ATTN_NKI_AVAILABLE = True
-        print("  [3/4] kernels/self_attention.py     ✓ LOADED")
+        print("  [3/4] kernels/self_attention.py     ✓ LOADED (@nki.jit direct)")
     except Exception as e:
         print(f"  [3/4] kernels/self_attention.py     ✗ FAILED: {e}")
 else:
