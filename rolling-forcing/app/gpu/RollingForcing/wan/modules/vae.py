@@ -22,7 +22,6 @@ _NKI_VAE_AVAILABLE = False
 
 if _USE_NKI_VAE:
     try:
-        import torch_neuronx.pyhlo  # noqa: F401 — required for @nki.jit runtime
         from kernels.vae_conv2d import vae_conv2d_k1, vae_conv2d_k3_shifted
         from kernels.vae_attention import vae_self_attention
         _nki_conv2d_k1 = vae_conv2d_k1      # already @nki.jit decorated
@@ -30,8 +29,6 @@ if _USE_NKI_VAE:
         _nki_self_attn = vae_self_attention   # already @nki.jit decorated
         _NKI_VAE_AVAILABLE = True
         print("[vae.py] NKI VAE kernels: ✓ LOADED (conv2d_k1, conv2d_k3, self_attn)")
-    except ImportError as e:
-        print(f"[vae.py] NKI VAE kernels: ✗ DISABLED ({e}) — using PyTorch fallback")
     except Exception as e:
         print(f"[vae.py] NKI VAE kernels: ✗ FAILED ({e}) — using PyTorch fallback")
 else:
