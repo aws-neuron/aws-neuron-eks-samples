@@ -22,11 +22,12 @@ _NKI_VAE_AVAILABLE = False
 
 if _USE_NKI_VAE:
     try:
+        from torch_neuronx.nki_hop import wrap_nki
         from kernels.vae_conv2d import vae_conv2d_k1, vae_conv2d_k3_shifted
         from kernels.vae_attention import vae_self_attention
-        _nki_conv2d_k1 = vae_conv2d_k1      # already @nki.jit decorated
-        _nki_conv2d_k3 = vae_conv2d_k3_shifted  # already @nki.jit decorated
-        _nki_self_attn = vae_self_attention   # already @nki.jit decorated
+        _nki_conv2d_k1 = wrap_nki(vae_conv2d_k1)
+        _nki_conv2d_k3 = wrap_nki(vae_conv2d_k3_shifted)
+        _nki_self_attn = wrap_nki(vae_self_attention)
         _NKI_VAE_AVAILABLE = True
         print("[vae.py] NKI VAE kernels: ✓ LOADED (conv2d_k1, conv2d_k3, self_attn)")
     except Exception as e:
