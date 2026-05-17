@@ -786,22 +786,34 @@ def run_benchmark(state: PipelineState):
         "per_block": per_block,
     }
 
-    # Print results
+    # Compute per-component averages (same format as StreamDiffusionV2)
+    compilation_time = per_block[0]["block_total_ms"] / 1000 if per_block else 0
+    avg_dit_per_block = (sum(b["block_total_ms"] - b["vae_ms"] for b in per_block[1:])
+                         / max(len(per_block) - 1, 1) / 1000)
+    avg_vae_per_block = (sum(b["vae_ms"] for b in per_block[1:])
+                         / max(len(per_block) - 1, 1) / 1000)
+    total_vae_time = sum(b["vae_ms"] for b in per_block) / 1000
+    vae_fps = total_pixel_frames / total_vae_time if total_vae_time > 0 else 0
+
+    # Print results (unified format matching StreamDiffusionV2)
     print()
     print("┌─────────────────────────────────────────────────────────┐")
-    print("│  BENCHMARK RESULTS                                      │")
+    print("│  BENCHMARK RESULTS (post-compilation)                    │")
     print("├─────────────────────────────────────────────────────────┤")
-    print(f"│  Pixel frames generated: {total_pixel_frames:>6}                      │")
-    print(f"│  Latent frames input:    {num_frames:>6}                      │")
-    print(f"│  Blocks processed:       {block_idx:>6}                      │")
-    print(f"│  Total time:             {total_time:>8.2f}s                   │")
-    print(f"│  T5 encode time:         {t5_time:>8.3f}s                   │")
-    print(f"│  Time-to-first-frame:    {(ttff or 0):>8.3f}s                   │")
+    print(f"│  Num frames:              {total_pixel_frames:>6}                      │")
+    print(f"│  Benchmark runs:          {1:>6}                      │")
+    print(f"│  Compilation time:     {compilation_time:>8.1f}s (warmup run 1)     │")
+    print(f"│  T5 encode time:       {t5_time:>8.3f}s                    │")
+    print(f"│  DiT/block time:       {avg_dit_per_block:>8.3f}s                    │")
+    print(f"│  VAE decode time:      {avg_vae_per_block:>8.3f}s                    │")
+    print(f"│  Total time:           {total_time:>8.3f}s                    │")
+    print(f"│  Time-to-first-frame:  {(ttff or 0):>8.3f}s                    │")
     print("├─────────────────────────────────────────────────────────┤")
     print(f"│  OVERALL FPS:            {overall_fps:>8.2f} frames/sec         │")
     print(f"│  STEADY-STATE FPS:       {steady_state_fps:>8.2f} frames/sec         │")
-    print(f"│  Real-time ratio:        {realtime_ratio:>8.3f}x (vs {fps}fps)     │")
-    print(f"│  Steady real-time ratio: {steady_realtime_ratio:>8.3f}x (vs {fps}fps)     │")
+    print(f"│  VAE decode FPS:         {vae_fps:>8.2f} frames/sec         │")
+    print(f"│  Real-time ratio:        {realtime_ratio:>8.3f}x (vs {fps}fps)      │")
+    print(f"│  Steady real-time ratio: {steady_realtime_ratio:>8.3f}x (vs {fps}fps)      │")
     print("└─────────────────────────────────────────────────────────┘")
     print()
 
