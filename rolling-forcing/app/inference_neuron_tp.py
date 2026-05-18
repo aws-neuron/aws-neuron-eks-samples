@@ -712,53 +712,51 @@ def run_benchmark(state: PipelineState):
     conditional_dict = {"prompt_embeds": prompt_embeds}
 
     # Step 5: Streaming inference with per-block timing
+    # DiT time = time between yields (generator blocks while computing DiT)
+    # VAE time = time to decode the yielded latent block
     per_block = []
     total_pixel_frames = 0
     block_idx = 0
     ttff = None
+    last_yield_time = time.time()  # start of first DiT computation
 
     for start_frame, latent_block in state.dit_pipeline.inference_rolling_forcing_streaming(
         noise, conditional_dict
     ):
-        block_start = time.time()
+        dit_time = time.time() - last_yield_time  # time spent in DiT (inside generator)
 
         # VAE decode
         vae_start = time.time()
         frames_np = decode_latents(state, latent_block.cpu())
         vae_time = time.time() - vae_start
 
-        block_total = time.time() - block_start
+        block_e2e = dit_time + vae_time
         n_frames = len(frames_np)
         total_pixel_frames += n_frames
 
         if ttff is None:
             ttff = time.time() - overall_start
 
-        block_fps = n_frames / block_total if block_total > 0 else 0
-        cumulative_fps = total_pixel_frames / (time.time() - overall_start)
-
         per_block.append({
             "block": block_idx,
-            "dit_ms": 0,  # DiT time included in streaming yield
+            "dit_ms": dit_time * 1000,
             "vae_ms": vae_time * 1000,
-            "block_total_ms": block_total * 1000,
-            "block_fps": block_fps,
-            "cumulative_fps": cumulative_fps,
+            "block_total_ms": block_e2e * 1000,
+            "n_frames": n_frames,
             "wall_s": time.time() - overall_start,
         })
         block_idx += 1
+        last_yield_time = time.time()  # start of next DiT computation
 
     total_time = time.time() - overall_start
     overall_fps = total_pixel_frames / total_time if total_time > 0 else 0
 
-    # Steady-state: exclude first block (cold start / compilation)
+    # Steady-state: exclude first block (compilation) 
     if len(per_block) > 1:
         steady_blocks = per_block[1:]
         steady_time = sum(b["block_total_ms"] for b in steady_blocks) / 1000
-        steady_frames = sum(1 for _ in steady_blocks)  # approximate
-        steady_state_fps = overall_fps  # Use cumulative as approximation
-        if steady_time > 0:
-            steady_state_fps = (total_pixel_frames - per_block[0].get("block_fps", 0)) / steady_time
+        steady_frames = sum(b["n_frames"] for b in steady_blocks)
+        steady_state_fps = steady_frames / steady_time if steady_time > 0 else 0
     else:
         steady_state_fps = overall_fps
 
@@ -787,33 +785,38 @@ def run_benchmark(state: PipelineState):
     }
 
     # Compute per-component averages (same format as StreamDiffusionV2)
+    num_frame_per_block = getattr(state.config, "num_frame_per_block", 3)
     compilation_time = per_block[0]["block_total_ms"] / 1000 if per_block else 0
-    avg_dit_per_block = (sum(b["block_total_ms"] - b["vae_ms"] for b in per_block[1:])
+    avg_dit_per_block = (sum(b["dit_ms"] for b in per_block[1:])
                          / max(len(per_block) - 1, 1) / 1000)
     avg_vae_per_block = (sum(b["vae_ms"] for b in per_block[1:])
                          / max(len(per_block) - 1, 1) / 1000)
-    total_vae_time = sum(b["vae_ms"] for b in per_block) / 1000
-    vae_fps = total_pixel_frames / total_vae_time if total_vae_time > 0 else 0
+    avg_e2e_per_block = (sum(b["block_total_ms"] for b in per_block[1:])
+                         / max(len(per_block) - 1, 1) / 1000)
+    # Streaming FPS = frames_per_block / e2e_per_block
+    stream_fps = num_frame_per_block / avg_e2e_per_block if avg_e2e_per_block > 0 else 0
+    vae_fps = num_frame_per_block / avg_vae_per_block if avg_vae_per_block > 0 else 0
 
     # Print results (unified format matching StreamDiffusionV2)
     print()
     print("┌─────────────────────────────────────────────────────────┐")
-    print("│  BENCHMARK RESULTS (post-compilation)                    │")
+    print("│  BENCHMARK RESULTS (post-compilation, streaming)         │")
     print("├─────────────────────────────────────────────────────────┤")
     print(f"│  Num frames:              {total_pixel_frames:>6}                      │")
     print(f"│  Benchmark runs:          {1:>6}                      │")
     print(f"│  Compilation time:     {compilation_time:>8.1f}s (warmup run 1)     │")
-    print(f"│  T5 encode time:       {t5_time:>8.3f}s                    │")
-    print(f"│  DiT/block time:       {avg_dit_per_block:>8.3f}s                    │")
-    print(f"│  VAE decode time:      {avg_vae_per_block:>8.3f}s                    │")
+    print(f"│  T5+anchor time:       {t5_time:>8.3f}s                    │")
+    print(f"│  DiT/block time:       {avg_dit_per_block:>8.3f}s (5 steps)       │")
+    print(f"│  VAE/batch time:       {avg_vae_per_block:>8.3f}s ({num_frame_per_block} frames)  │")
+    print(f"│  Batch E2E time:       {avg_e2e_per_block:>8.3f}s ({num_frame_per_block}×DiT+VAE) │")
     print(f"│  Total time:           {total_time:>8.3f}s                    │")
     print(f"│  Time-to-first-frame:  {(ttff or 0):>8.3f}s                    │")
     print("├─────────────────────────────────────────────────────────┤")
     print(f"│  OVERALL FPS:            {overall_fps:>8.2f} frames/sec         │")
-    print(f"│  STEADY-STATE FPS:       {steady_state_fps:>8.2f} frames/sec         │")
+    print(f"│  STREAMING FPS:          {stream_fps:>8.2f} frames/sec         │")
     print(f"│  VAE decode FPS:         {vae_fps:>8.2f} frames/sec         │")
     print(f"│  Real-time ratio:        {realtime_ratio:>8.3f}x (vs {fps}fps)      │")
-    print(f"│  Steady real-time ratio: {steady_realtime_ratio:>8.3f}x (vs {fps}fps)      │")
+    print(f"│  Stream real-time ratio: {stream_fps/fps:>8.3f}x (vs {fps}fps)      │")
     print("└─────────────────────────────────────────────────────────┘")
     print()
 
