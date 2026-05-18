@@ -715,6 +715,7 @@ def run_benchmark(state: PipelineState):
     # DiT time = time between yields (generator blocks while computing DiT)
     # VAE time = time to decode the yielded latent block
     per_block = []
+    all_frame_arrays = []  # collect all frames for video save
     total_pixel_frames = 0
     block_idx = 0
     ttff = None
@@ -733,6 +734,7 @@ def run_benchmark(state: PipelineState):
         block_e2e = dit_time + vae_time
         n_frames = len(frames_np)
         total_pixel_frames += n_frames
+        all_frame_arrays.extend(frames_np)  # save for video output
 
         if ttff is None:
             ttff = time.time() - overall_start
@@ -825,6 +827,21 @@ def run_benchmark(state: PipelineState):
     else:
         speedup_needed = fps / steady_state_fps if steady_state_fps > 0 else float('inf')
         print(f"  ⚠️  Need {speedup_needed:.1f}x speedup to reach real-time ({fps}fps playback)")
+
+    # Save video to /var/mdl/ for quality inspection (using frames collected during benchmark)
+    output_dir = "/var/mdl"
+    os.makedirs(output_dir, exist_ok=True)
+    video_path = os.path.join(output_dir, "rolling_forcing_output.mp4")
+    try:
+        logger.info(f"Saving video to {video_path} ({len(all_frame_arrays)} frames)...")
+        import imageio
+        writer = imageio.get_writer(video_path, fps=fps, codec='libx264')
+        for frame in all_frame_arrays:
+            writer.append_data(frame)
+        writer.close()
+        logger.info(f"Video saved: {video_path}")
+    except Exception as e:
+        logger.warning(f"Failed to save video: {e}")
 
     print()
     print(json.dumps(results, indent=2))
