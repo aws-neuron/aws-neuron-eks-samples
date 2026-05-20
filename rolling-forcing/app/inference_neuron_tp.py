@@ -3,15 +3,16 @@
 Runs the rolling-forcing pipeline with tensor parallelism across 4 NeuronCores.
 ALL compute on Neuron — compiled via torch.compile(backend='neuron').
 
-Compilation strategy:
+Compilation strategy (AGGRESSIVE FUSION — see docs/PROFILING_RESULTS.md):
   - T5:  torch.compile(backend='neuron') — full model (static shape, no state)
   - VAE: torch.compile(backend='neuron') — full model (static shape, no state)
-  - DiT: Sub-module compilation (attention has dynamic KV cache control flow):
+  - DiT: WHOLE-BLOCK compilation (each block = ONE NEFF per shape):
       * patch_embedding, text_embedding, time_embedding, time_projection, head — compiled
-      * FFN in each block — compiled (Linear→GELU→Linear, pure)
-      * Self-attention, cross-attention, RoPE — NKI kernels via wrap_nki HOP
-      * Attention orchestration (cache indexing, eviction) — Python (dynamic)
-      * dist.all_reduce — simple call, no chunking needed
+      * Each CausalWanAttentionBlockTP — compiled as a whole (norm+attn+FFN fused)
+      * NKI kernels (self_attn, cross_attn, rope) inlined into block's compiled graph
+      * KV cache passed as tensor arguments (static-shape within each block call)
+      * dist.all_reduce preserved inside RowParallelLinear within compiled graph
+      * Target: ~67 NEFFs (vs 437 before) — 7-8x fewer kernel launches
 
 Usage:
     torchrun --nproc_per_node=4 inference_neuron_tp.py
@@ -225,21 +226,43 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
     # Move TP-sharded DiT to this rank's Neuron core
     state.dit_pipeline.generator.model = state.dit_pipeline.generator.model.to(NEURON_DEVICE)
 
-    # Compile pure (stateless, static-shape) sub-modules within DiT
+    # ═══════════════════════════════════════════════════════════════════
+    # AGGRESSIVE FUSION: Compile entire transformer blocks as single NEFFs.
+    #
+    # Previous approach compiled sub-modules separately (patch_embed, time_embed,
+    # time_proj, head, 30×FFN) resulting in 437 NEFFs and 425K kernel launches.
+    # MFU was 0.03% — NeuronCores idle 99.97% of the time due to scheduling overhead.
+    #
+    # New approach: torch.compile(block, backend='neuron') fuses the entire block
+    # (norm + modulation + self_attn + cross_attn + FFN + residuals) into ONE NEFF
+    # per block per input shape. NKI kernels (wrap_nki HOP) are inlined into the
+    # compiled graph. all_reduce ops preserved inside RowParallelLinear.
+    #
+    # Expected reduction: 437 NEFFs → ~67 NEFFs (30 blocks × 2 shapes + embeddings)
+    # ═══════════════════════════════════════════════════════════════════
     dit_model = state.dit_pipeline.generator.model
+
+    # Compile embedding layers (stateless, static-shape, lightweight)
     dit_model.patch_embedding = torch.compile(dit_model.patch_embedding, backend='neuron', dynamic=False)
     dit_model.text_embedding = torch.compile(dit_model.text_embedding, backend='neuron', dynamic=False)
     dit_model.time_embedding = torch.compile(dit_model.time_embedding, backend='neuron', dynamic=False)
     dit_model.time_projection = torch.compile(dit_model.time_projection, backend='neuron', dynamic=False)
     dit_model.head = torch.compile(dit_model.head, backend='neuron', dynamic=False)
-    # Compile FFN in each block (pure: Linear→GELU→Linear, no state)
-    for block in dit_model.blocks:
-        block.ffn = torch.compile(block.ffn, backend='neuron', dynamic=False)
+
+    # WHOLE-BLOCK FUSION: compile each transformer block as a single unit.
+    # Each block.forward() contains: norm→modulation→self_attn(NKI)→residual→
+    #   norm→cross_attn(NKI)→residual→norm→modulation→FFN→residual
+    # All fused into ONE NEFF (per input shape).
+    for i, block in enumerate(dit_model.blocks):
+        dit_model.blocks[i] = torch.compile(block, backend='neuron', dynamic=False)
 
     if rank == 0:
         logger.info(f"DiT 1.3B TP-sharded on neuron (rank {rank}, {TP_DEGREE} ranks total)")
-        logger.info(f"  Compiled sub-modules: patch_embed, text_embed, time_embed, time_proj, head, FFN×{len(dit_model.blocks)}")
-        logger.info(f"  NKI kernels: self_attn, cross_attn, rope (via wrap_nki HOP)")
+        logger.info(f"  AGGRESSIVE FUSION: whole-block compilation (30 blocks as single NEFFs)")
+        logger.info(f"  Compiled: patch_embed, text_embed, time_embed, time_proj, head")
+        logger.info(f"  Compiled: {len(dit_model.blocks)} blocks (norm+attn+FFN fused per block)")
+        logger.info(f"  NKI kernels inlined: self_attn, cross_attn, rope (inside compiled blocks)")
+        logger.info(f"  Expected NEFFs: ~67 (vs 437 before) — target 7-8x speedup")
 
     # ── Load VAE (TP-aware: shard across VAE_RANKS or single rank) ───────────
     if VAE_TP_DEGREE > 1:
