@@ -828,20 +828,19 @@ def run_benchmark(state: PipelineState):
         speedup_needed = fps / steady_state_fps if steady_state_fps > 0 else float('inf')
         print(f"  ⚠️  Need {speedup_needed:.1f}x speedup to reach real-time ({fps}fps playback)")
 
-    # Save video to /var/mdl/ for quality inspection (using frames collected during benchmark)
-    output_dir = "/var/mdl"
-    os.makedirs(output_dir, exist_ok=True)
-    video_path = os.path.join(output_dir, "rolling_forcing_output.mp4")
+    # Save individual PNG frames to PVC for quality inspection.
+    # We avoid imageio/ffmpeg inside torchrun (fork_exec conflicts).
+    # The job YAML will stitch frames into mp4 after torchrun exits.
+    frames_dir = "/var/mdl/rolling_forcing/frames"
+    os.makedirs(frames_dir, exist_ok=True)
     try:
-        logger.info(f"Saving video to {video_path} ({len(all_frame_arrays)} frames)...")
-        import imageio
-        writer = imageio.get_writer(video_path, fps=fps, codec='libx264')
-        for frame in all_frame_arrays:
-            writer.append_data(frame)
-        writer.close()
-        logger.info(f"Video saved: {video_path}")
+        logger.info(f"Saving {len(all_frame_arrays)} frames as PNGs to {frames_dir}/ ...")
+        for i, frame in enumerate(all_frame_arrays):
+            img = Image.fromarray(frame)
+            img.save(os.path.join(frames_dir, f"frame_{i:04d}.png"))
+        logger.info(f"Frames saved: {frames_dir}/frame_0000.png ... frame_{len(all_frame_arrays)-1:04d}.png")
     except Exception as e:
-        logger.warning(f"Failed to save video: {e}")
+        logger.warning(f"Failed to save frames: {e}")
 
     print()
     print(json.dumps(results, indent=2))
