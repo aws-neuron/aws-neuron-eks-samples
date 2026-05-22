@@ -10,9 +10,9 @@ Algorithm: single-pass flash attention for small seq_k (512 from T5).
 Uses identity matmul trick for transpose in PV computation.
 Accumulation done in SBUF (PSUM is write-only by nc_matmul).
 """
-import neuronxcc.nki as nki
-import neuronxcc.nki.language as nl
-import neuronxcc.nki.isa as nisa
+import nki
+import nki.language as nl
+import nki.isa as nisa
 import numpy as np
 
 

@@ -10,9 +10,9 @@ Call-site responsibilities:
     - Pass num_sections = seqlen_k // 8192 as Python int
     - Truncate output[:seq_q] after kernel returns
 """
-import neuronxcc.nki as nki
-import neuronxcc.nki.language as nl
-import neuronxcc.nki.isa as nisa
+import nki
+import nki.language as nl
+import nki.isa as nisa
 
 
 @nki.jit

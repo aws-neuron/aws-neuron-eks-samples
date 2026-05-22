@@ -31,9 +31,9 @@ Key substitutions from kernel_builder:
     - nb.range → nl.sequential_range (outer) / nl.affine_range (inner)
     - tensor_tensor_arith(dst=,...) → return-style nisa.tensor_tensor()
 """
-import neuronxcc.nki as nki
-import neuronxcc.nki.language as nl
-import neuronxcc.nki.isa as nisa
+import nki
+import nki.language as nl
+import nki.isa as nisa
 
 
 @nki.jit
