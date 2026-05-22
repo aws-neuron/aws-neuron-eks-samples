@@ -18,7 +18,7 @@ spec:
           resourceClaimTemplateName: m-trn2
       containers:
         - name: inference
-          image: 421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-d1c940d:latest
+          image: 421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-0461d3b:latest
           imagePullPolicy: IfNotPresent
           command:
             - /bin/bash
