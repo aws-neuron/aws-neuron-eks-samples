@@ -88,8 +88,9 @@ def vae_self_attention(q, k, v, identity, softmax_scale=None):
                                   src=k[batch_id, nl.ds(d_off, P), nl.ds(sk_off, CHUNK)])
 
                     # nc_matmul: Q[P,P].T @ K_chunk[P,512] → [P, 512]
-                    qk_psum = nisa.nc_matmul(q_buf, k_chunk)
-                    qk_sbuf = nl.copy(qk_psum)
+                    qk_psum = nl.ndarray((P, CHUNK), dtype=nl.float32, buffer=nl.psum)
+                    nisa.nc_matmul(qk_psum, q_buf, k_chunk)
+                    qk_sbuf = nl.copy(qk_psum, dtype=nl.float32)
 
                     # Accumulate into the right seq_k columns
                     qk_slice = nl.copy(qk_acc[:, nl.ds(sk_off, CHUNK)])
@@ -148,8 +149,10 @@ def vae_self_attention(q, k, v, identity, softmax_scale=None):
                 attn_chunk = nl.copy(exp_bf16[:, nl.ds(v_start, P)])
 
                 # Transpose via identity matmul trick
-                attn_T_psum = nisa.nc_matmul(attn_chunk, id_sbuf)
-                attn_T = nl.copy(attn_T_psum)
+                attn_T_psum = nl.ndarray((P, P), dtype=nl.float32, buffer=nl.psum)
+                nisa.nc_matmul(attn_T_psum, attn_chunk, id_sbuf)
+                attn_T_f32 = nl.copy(attn_T_psum, dtype=nl.float32)
+                attn_T = nl.copy(attn_T_f32, dtype=nl.bfloat16)
 
                 # nc_matmul: attn_T[P,P].T @ V[P,d]
                 # V has free dim = d, which could be 256/512/1024
@@ -159,8 +162,9 @@ def vae_self_attention(q, k, v, identity, softmax_scale=None):
                 for dmc in range(d_mat_chunks):
                     dmc_start = dmc * CHUNK
                     v_d_chunk = nl.copy(v_tile[:, nl.ds(dmc_start, CHUNK)])
-                    pv_chunk = nisa.nc_matmul(attn_T, v_d_chunk)
-                    pv_s = nl.copy(pv_chunk)
+                    pv_psum = nl.ndarray((P, CHUNK), dtype=nl.float32, buffer=nl.psum)
+                    nisa.nc_matmul(pv_psum, attn_T, v_d_chunk)
+                    pv_s = nl.copy(pv_psum, dtype=nl.float32)
                     existing = nl.copy(pv_accum[:, nl.ds(dmc_start, CHUNK)])
                     updated = nl.add(existing, pv_s)
                     pv_accum[:, nl.ds(dmc_start, CHUNK)] = updated
@@ -168,8 +172,9 @@ def vae_self_attention(q, k, v, identity, softmax_scale=None):
                 if d_mat_rem > 0:
                     dmc_start_rem = d_mat_chunks * CHUNK
                     v_d_rem = nl.copy(v_tile[:, nl.ds(dmc_start_rem, d_mat_rem)])
-                    pv_rem = nisa.nc_matmul(attn_T, v_d_rem)
-                    pv_rem_s = nl.copy(pv_rem)
+                    pv_rem_psum = nl.ndarray((P, d_mat_rem), dtype=nl.float32, buffer=nl.psum)
+                    nisa.nc_matmul(pv_rem_psum, attn_T, v_d_rem)
+                    pv_rem_s = nl.copy(pv_rem_psum, dtype=nl.float32)
                     existing_rem = nl.copy(pv_accum[:, nl.ds(dmc_start_rem, d_mat_rem)])
                     updated_rem = nl.add(existing_rem, pv_rem_s)
                     pv_accum[:, nl.ds(dmc_start_rem, d_mat_rem)] = updated_rem
