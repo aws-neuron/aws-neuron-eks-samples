@@ -1,0 +1,279 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rolling-forcing
+  namespace: default
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: rolling-forcing
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        node-type: trn2
+      resourceClaims:
+        - name: s-lnc2-trn2
+          resourceClaimTemplateName: s-lnc2-trn2
+      containers:
+        - name: inference
+          image: 421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-0461d3b:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - "-exc"
+            - |
+              set -euxo pipefail
+              
+              git clone -b rolling-forcing https://yahavb:${GITHUB_TOKEN}@github.com/aws-neuron/aws-neuron-eks-samples.git
+              cd aws-neuron-eks-samples/rolling-forcing/app
+              export RF_DEVICE_BACKEND=neuron
+              
+              # Install dependencies
+              uv pip install -r requirements.txt
+              uv pip install "setuptools<81"
+              uv pip install git+https://github.com/pytorch/vision.git@v0.25.0 --no-deps --no-cache --no-build-isolation
+              
+              # /var/mdl is S3-backed. Use single tar file to avoid per-file S3 overhead
+              WAN_1_3B_TAR="/var/mdl/wan_models/Wan2.1-T2V-1.3B.tar"
+              
+              # Copy Wan 1.3B model as single tar from S3 cache to local disk
+              mkdir -p wan_models
+              if [[ -f "$WAN_1_3B_TAR" ]]; then
+                echo "Copying Wan 1.3B tar from S3 cache..."
+                cp "$WAN_1_3B_TAR" /tmp/Wan2.1-T2V-1.3B.tar
+                echo "Extracting..."
+                tar xf /tmp/Wan2.1-T2V-1.3B.tar -C wan_models/
+                rm -f /tmp/Wan2.1-T2V-1.3B.tar
+                echo "Done!"
+              else
+                echo "Downloading Wan 1.3B model from HuggingFace to local disk..."
+                python3 -c "from huggingface_hub import snapshot_download; snapshot_download('Wan-AI/Wan2.1-T2V-1.3B', local_dir='wan_models/Wan2.1-T2V-1.3B', local_dir_use_symlinks=False)"
+                echo "Creating tar archive for S3 cache (avoids per-file overhead next time)..."
+                tar cf /tmp/Wan2.1-T2V-1.3B.tar -C wan_models Wan2.1-T2V-1.3B
+                mkdir -p "$(dirname $WAN_1_3B_TAR)"
+                cp /tmp/Wan2.1-T2V-1.3B.tar "$WAN_1_3B_TAR"
+                rm -f /tmp/Wan2.1-T2V-1.3B.tar
+                echo "Cached tar to S3!"
+              fi
+              
+              echo "Model weights ready!"
+              
+              # Copy RollingForcing DMD checkpoint from S3 cache to local disk
+              RF_CACHE="/var/mdl/checkpoints/rolling_forcing_dmd.pt"
+              mkdir -p checkpoints
+              if [[ -f "$RF_CACHE" ]]; then
+                echo "Copying RollingForcing checkpoint from S3 cache to local disk..."
+                cp "$RF_CACHE" checkpoints/rolling_forcing_dmd.pt
+                echo "Copy complete!"
+              else
+                echo "Downloading RollingForcing checkpoint from HuggingFace to local disk..."
+                python3 -c "from huggingface_hub import hf_hub_download; hf_hub_download('TencentARC/RollingForcing', 'checkpoints/rolling_forcing_dmd.pt', local_dir='.')"
+                echo "Caching to S3 for next time..."
+                mkdir -p "$(dirname $RF_CACHE)"
+                cp checkpoints/rolling_forcing_dmd.pt "$RF_CACHE"
+              fi
+              
+              # ========================================
+              # NEFF Cache: controlled by USE_NEFF_CACHE env var
+              # ========================================
+              NEFF_LOCAL="/tmp/neff_cache"
+              NEFF_S3="/var/mdl/neff_cache_1.3b_tp8"
+              mkdir -p "$NEFF_LOCAL"
+              
+              if [[ "${USE_NEFF_CACHE:-true}" == "true" && -d "$NEFF_S3" && -n "$(ls -A $NEFF_S3 2>/dev/null)" ]]; then
+                echo "Loading NEFF cache from S3..."
+                cp -r "$NEFF_S3/"* "$NEFF_LOCAL/"
+                echo "NEFF cache loaded ($(du -sh $NEFF_LOCAL | cut -f1))"
+              else
+                echo "NEFF cache disabled or empty - will compile fresh"
+              fi
+              
+              # ========================================
+              # Profiling: controlled by ENABLE_PROFILING env var
+              # Set ENABLE_PROFILING=true to capture neuron device traces
+              # ========================================
+              if [[ "${ENABLE_PROFILING:-false}" == "true" ]]; then
+                export NEURON_RT_INSPECT_ENABLE=1
+                export NEURON_RT_INSPECT_OUTPUT_DIR=/tmp/neuron_profile
+                export NEURON_RT_INSPECT_DEVICE_PROFILE=session
+                mkdir -p /tmp/neuron_profile
+                echo "============================================"
+                echo "  PROFILING ENABLED"
+                echo "  Output: $NEURON_RT_INSPECT_OUTPUT_DIR"
+                echo "  Mode: session (full execution trace)"
+                echo "============================================"
+              fi
+              
+              # Launch benchmark mode: loads pipeline, runs streaming inference,
+              # measures FPS, prints results, exits cleanly.
+              export REPO_DIR=$(pwd)
+              torchrun --nproc_per_node=4 --master_port=29500 \
+                inference_neuron_tp.py \
+                --config configs/rolling_forcing_dmd_f81_b1.yaml \
+                --benchmark 2>&1
+              
+              # ========================================
+              # Find the LOCAL run directory (written by inference_neuron_tp.py to /tmp)
+              # All work happens on local disk for speed + S3 seek compatibility
+              # ========================================
+              RUN_DIR=$(find /tmp -maxdepth 1 -name "rf_run_*" -type d | sort | tail -1)
+              if [[ -z "$RUN_DIR" ]]; then
+                echo "WARNING: No local run directory found — using fallback"
+                RUN_DIR="/tmp/rf_run_$(date +%Y%m%d_%H%M%S)"
+                mkdir -p "$RUN_DIR/frames"
+              fi
+              TIMESTAMP=$(basename "$RUN_DIR" | sed 's/rf_run_//')
+              echo "Local run directory: $RUN_DIR (timestamp: $TIMESTAMP)"
+              
+              # ========================================
+              # Stitch PNGs into mp4 on LOCAL DISK (S3 doesn't support seeks)
+              # ========================================
+              apt-get update -qq && apt-get install -y -qq ffmpeg > /dev/null 2>&1 || true
+              FRAMES_DIR="$RUN_DIR/frames"
+              VIDEO_OUT="$RUN_DIR/output.mp4"
+              if [[ -d "$FRAMES_DIR" && -n "$(ls $FRAMES_DIR/frame_*.png 2>/dev/null | head -1)" ]]; then
+                FRAME_COUNT=$(ls $FRAMES_DIR/frame_*.png | wc -l)
+                echo "Stitching $FRAME_COUNT frames into video: $VIDEO_OUT"
+                ffmpeg -y -framerate 16 -i "$FRAMES_DIR/frame_%04d.png" \
+                  -c:v libx264 -pix_fmt yuv420p -crf 18 "$VIDEO_OUT" 2>&1 || \
+                  echo "WARNING: ffmpeg stitch failed (frames still available as PNGs)"
+                if [[ -f "$VIDEO_OUT" ]]; then
+                  echo "Video saved: $VIDEO_OUT ($(du -sh $VIDEO_OUT | cut -f1))"
+                fi
+              else
+                echo "No frames found in $FRAMES_DIR — skipping video stitch"
+              fi
+              
+              # ========================================
+              # Copy profile artifacts into LOCAL run directory (if profiling was enabled)
+              # ========================================
+              if [[ "${ENABLE_PROFILING:-false}" == "true" ]]; then
+                PROFILE_DEST="$RUN_DIR/profiles"
+                echo ""
+                echo "============================================"
+                echo "  Copying neuron profile artifacts"
+                echo "  Source: /tmp/neuron_profile/"
+                echo "  Dest:   $PROFILE_DEST"
+                echo "============================================"
+                mkdir -p "$PROFILE_DEST"
+                
+                if [[ -d /tmp/neuron_profile && -n "$(ls -A /tmp/neuron_profile 2>/dev/null)" ]]; then
+                  cp -r /tmp/neuron_profile/* "$PROFILE_DEST/"
+                  echo "Profile artifacts saved!"
+                  echo ""
+                  echo "=== Profile artifact summary ==="
+                  echo "Total size: $(du -sh $PROFILE_DEST | cut -f1)"
+                  echo "NTFF files: $(find $PROFILE_DEST -name '*.ntff' | wc -l)"
+                  echo "NEFF files: $(find $PROFILE_DEST -name '*.neff' | wc -l)"
+                  echo ""
+                  echo "Run neuron-explorer to analyze:"
+                  echo "  kubectl apply -f rolling-forcing-neuron-explorer-job.yaml"
+                else
+                  echo "WARNING: No profile files found in /tmp/neuron_profile/"
+                fi
+              fi
+              
+              # ========================================
+              # ARCHIVE: Copy entire local run to S3 persistent storage
+              # /var/mdl is S3-backed (Mountpoint for Amazon S3) — archive only
+              # ========================================
+              ARCHIVE_DIR="/var/mdl/rolling_forcing/runs/$TIMESTAMP"
+              echo ""
+              echo "============================================"
+              echo "  ARCHIVING to S3: $ARCHIVE_DIR"
+              echo "============================================"
+              mkdir -p "$ARCHIVE_DIR"
+              cp -r "$RUN_DIR"/* "$ARCHIVE_DIR/" 2>&1
+              echo "Archive complete!"
+              
+              # ========================================
+              # Print final run summary
+              # ========================================
+              echo ""
+              echo "============================================"
+              echo "  RUN COMPLETE"
+              echo "  Local: $RUN_DIR"
+              echo "  S3 Archive: $ARCHIVE_DIR"
+              echo "  Contents:"
+              ls -la "$ARCHIVE_DIR/" 2>/dev/null || true
+              echo "============================================"
+          resources:
+            claims:
+              - name: s-lnc2-trn2
+            requests:
+              cpu: 44
+              memory: 440Gi
+            limits:
+              cpu: 44
+              memory: 440Gi
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: 621547421844-ap-southeast-4-pvc
+              mountPath: /var/mdl
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: NEURON_RT_LOG_LEVEL
+              value: "ERROR"
+            - name: NEURON_CC_LOG_LEVEL
+              value: "ERROR"
+            - name: TORCH_NEURONX_LOG_LEVEL
+              value: "ERROR"
+            - name: RF_DEVICE_BACKEND
+              value: "neuron"
+            - name: NEURON_LOGICAL_NC_CONFIG
+              value: "2"
+            - name: NEURON_RT_DBG_INTRA_RDH_CHANNEL_BUFFER_SIZE
+              value: "134217728"
+            - name: NEURON_CC_FLAGS
+              value: "--model-type=transformer"
+            - name: USE_NKI_KERNELS
+              value: "true"
+            - name: USE_NEFF_CACHE
+              value: "false"
+            # Set to "true" to enable neuron device profiling (captures NTFF traces)
+            - name: ENABLE_PROFILING
+              value: "false"
+            - name: VALIDATE_PIPELINE
+              value: "1"
+            - name: CONFIG_PATH
+              value: "configs/default_config.yaml"
+            - name: MODEL_PATH
+              value: "wan_models/Wan2.1-T2V-1.3B"
+            - name: VAE_PATH
+              value: "wan_models/Wan2.1-T2V-1.3B/Wan2.1_VAE.pth"
+            - name: CHECKPOINT_PATH
+              value: "checkpoints/rolling_forcing_dmd.pt"
+            - name: DEFAULT_NUM_FRAMES
+              value: "81"
+            - name: DEFAULT_FPS
+              value: "16"
+            - name: TP_DEGREE
+              value: "4"
+            - name: VAE_TP_DEGREE
+              value: "1"
+            - name: T5_RANK
+              value: "2"
+            - name: DEVICE
+              value: "neuron"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-token
+                  key: GITHUB_TOKEN
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Gi
+        - name: 621547421844-ap-southeast-4-pvc
+          persistentVolumeClaim:
+            claimName: 621547421844-ap-southeast-4-pvc
