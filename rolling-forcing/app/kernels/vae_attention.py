@@ -100,26 +100,12 @@ def vae_self_attention(q, k, v, identity, softmax_scale=None):
             # Scale (nl.multiply handles tile × float; Python * operator not supported in NKI)
             qk_scaled = nl.multiply(qk_acc, softmax_scale)
 
-            # ── Phase 2: Softmax ──
-            # Row max in 512 chunks
-            pmaxes = nl.ndarray((P, num_sk_chunks), dtype=nl.float32, buffer=nl.sbuf)
-            for sc in range(num_sk_chunks):
-                sc_start = sc * CHUNK
-                pmaxes[:, nl.ds(sc, 1)] = nl.max(
-                    qk_scaled[:, nl.ds(sc_start, CHUNK)], axis=1)
-            row_max = nl.max(pmaxes, axis=1)
-
-            # Subtract max and exp
+            # ── Phase 2: Softmax (matches cross_attention.py pattern) ──
+            # nl.max/nl.sum handle large free dims natively (512 limit is nc_matmul only)
+            row_max = nl.max(qk_scaled, axis=1, keepdims=True)
             qk_shifted = nl.subtract(qk_scaled, row_max)
             exp_qk = nl.exp(qk_shifted)
-
-            # Row sum in 512 chunks
-            psums = nl.ndarray((P, num_sk_chunks), dtype=nl.float32, buffer=nl.sbuf)
-            for sc in range(num_sk_chunks):
-                sc_start = sc * CHUNK
-                psums[:, nl.ds(sc, 1)] = nl.sum(
-                    exp_qk[:, nl.ds(sc_start, CHUNK)], axis=1)
-            row_sum = nl.sum(psums, axis=1)
+            row_sum = nl.sum(exp_qk, axis=1, keepdims=True)
             row_sum_recip = nl.reciprocal(row_sum)
 
             # Cast exp to bf16 for PV matmul
