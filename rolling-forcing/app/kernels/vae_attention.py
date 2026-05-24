@@ -97,8 +97,8 @@ def vae_self_attention(q, k, v, identity, softmax_scale=None):
                     qk_updated = nl.add(qk_slice, qk_sbuf)
                     qk_acc[:, nl.ds(sk_off, CHUNK)] = qk_updated
 
-            # Scale
-            qk_scaled = qk_acc * softmax_scale
+            # Scale (nl.multiply handles tile × float; Python * operator not supported in NKI)
+            qk_scaled = nl.multiply(qk_acc, softmax_scale)
 
             # ── Phase 2: Softmax ──
             # Row max in 512 chunks
