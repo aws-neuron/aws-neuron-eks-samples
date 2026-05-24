@@ -10,7 +10,8 @@ nc_matmul semantics: nc_matmul(stationary, moving) = stationary.T @ moving
 Input layout: (C, H*W) flattened spatial — caller handles the 5D→2D reshape.
 Weight layout: TRANSPOSED — weight_T is (C_in, C_out) so nc_matmul gives W @ input.
 
-NKI API: bundled neuronxcc.nki.isa return-style (same as cross_attention.py).
+NKI API: uses only nisa.dma_copy and nisa.nc_matmul from ISA;
+all other ops use nl.* (nl.zeros, nl.copy, nl.add, etc.) — new SDK compatible.
 """
 import nki
 import nki.language as nl
@@ -58,13 +59,12 @@ def vae_conv2d_k1(input_2d, weight_T, bias, HW):
             sp = sp_t * SPATIAL_TILE
 
             # Accumulator in float32
-            acc = nisa.memset((P, SPATIAL_TILE), value=0.0, dtype=nl.float32)
+            acc = nl.zeros((P, SPATIAL_TILE), dtype=nl.float32)
 
             for ci_t in range(num_ci_tiles):
                 ci = ci_t * P
 
                 # Load weight_T chunk: (P_ci, P_co) from weight_T[ci:ci+P, co:co+P]
-                # nc_matmul will compute: weight_T_chunk.T @ input = W[co:co+P, ci:ci+P] @ input
                 w_chunk = nl.ndarray((P, P), dtype=weight_T.dtype, buffer=nl.sbuf)
                 nisa.dma_copy(dst=w_chunk, src=weight_T[nl.ds(ci, P), nl.ds(co, P)])
 
@@ -75,10 +75,10 @@ def vae_conv2d_k1(input_2d, weight_T, bias, HW):
                 # nc_matmul: w_chunk.T @ inp_chunk = W[co:co+P, ci:ci+P] @ input[ci:ci+P, sp:sp+512]
                 mm = nisa.nc_matmul(w_chunk, inp_chunk)
                 mm_sbuf = nl.copy(mm)
-                acc[...] = nisa.tensor_tensor(acc, mm_sbuf, nl.add)
+                acc = nl.add(acc, mm_sbuf)
 
             # Add bias (broadcast along spatial dim)
-            acc[...] = nisa.tensor_tensor(acc, bias_sbuf, nl.add)
+            acc = nl.add(acc, bias_sbuf)
 
             # Store
             out_tile = nl.copy(acc, dtype=input_2d.dtype)
@@ -129,7 +129,7 @@ def vae_conv2d_k3_shifted(shifted_inputs, weight_slices_T, bias, num_positions):
         for sp_t in nl.sequential_range(num_sp_tiles):
             sp = sp_t * SPATIAL_TILE
 
-            acc = nisa.memset((P, SPATIAL_TILE), value=0.0, dtype=nl.float32)
+            acc = nl.zeros((P, SPATIAL_TILE), dtype=nl.float32)
 
             # 9 kernel positions × C_in/P contraction tiles
             for k_idx in range(9):
@@ -137,7 +137,6 @@ def vae_conv2d_k3_shifted(shifted_inputs, weight_slices_T, bias, num_positions):
                     ci = ci_t * P
 
                     # Weight_T for this (k_idx, ci_tile): (P_ci, P_co)
-                    # row = k_idx * C_in + ci, col = co
                     w_row = k_idx * C_in + ci
                     w_chunk = nl.ndarray((P, P), dtype=weight_slices_T.dtype, buffer=nl.sbuf)
                     nisa.dma_copy(dst=w_chunk,
@@ -153,10 +152,10 @@ def vae_conv2d_k3_shifted(shifted_inputs, weight_slices_T, bias, num_positions):
                     # nc_matmul: w_chunk.T @ inp_chunk = W_slice[co:co+P, ci:ci+P] @ shifted_input
                     mm = nisa.nc_matmul(w_chunk, inp_chunk)
                     mm_sbuf = nl.copy(mm)
-                    acc[...] = nisa.tensor_tensor(acc, mm_sbuf, nl.add)
+                    acc = nl.add(acc, mm_sbuf)
 
             # Add bias
-            acc[...] = nisa.tensor_tensor(acc, bias_sbuf, nl.add)
+            acc = nl.add(acc, bias_sbuf)
 
             out_tile = nl.copy(acc, dtype=shifted_inputs.dtype)
             nisa.dma_copy(dst=output[nl.ds(co, P), nl.ds(sp, SPATIAL_TILE)], src=out_tile)
