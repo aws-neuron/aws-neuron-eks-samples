@@ -17,16 +17,14 @@ Usage:
     torchrun --nproc_per_node=4 inference_neuron_tp.py
 
 Architecture:
-    4 NeuronCores across 2 NeuronDevices (ND0-ND1), 2 cores per device sharing HBM.
+    TP_DEGREE NeuronCores (1 core per rank, device mapping handled by runtime).
     1.3B model: dim=1536, 12 heads, 30 layers, ffn_dim=8960
     TP=4: 3 heads/rank, ~325M params/rank (~0.65GB bf16)
 
-    Memory layout (HBM banks are shared per NeuronDevice pair):
-      HBM Bank 0 (ND0): rank 0 (DiT + VAE) + rank 1 (DiT)   ≈ 5 GB
-      HBM Bank 1 (ND1): rank 2 (DiT + T5)  + rank 3 (DiT)   ≈ 12 GB
-
-    T5 on rank 2 (ND1) and VAE on rank 0 (ND0) ensures they never compete
-    for the same HBM bank.
+    Model placement:
+      - DiT: TP-sharded across all ranks
+      - T5:  loaded on T5_RANK (separate rank from VAE to distribute memory)
+      - VAE: loaded on VAE_RANK
 """
 import os
 import sys
@@ -82,8 +80,7 @@ DEFAULT_NUM_FRAMES = int(os.environ.get("DEFAULT_NUM_FRAMES", "161"))
 DEFAULT_FPS = int(os.environ.get("DEFAULT_FPS", "16"))
 TP_DEGREE = int(os.environ.get("TP_DEGREE", "4"))
 
-# T5 encoder rank — placed on rank 2 (ND1) to separate from VAE (rank 0, ND0).
-# This avoids T5 + VAE competing for the same HBM bank.
+# T5 encoder rank — placed on a different rank than VAE to distribute memory load.
 T5_RANK = int(os.environ.get("T5_RANK", "2"))
 # VAE TP: how many ranks to shard the VAE decoder across (1=single rank, 2=2-way TP)
 VAE_TP_DEGREE = int(os.environ.get("VAE_TP_DEGREE", "1"))
@@ -139,8 +136,8 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
     """Load all models with TP sharding for DiT.
 
     Memory distribution:
-      - T5 (~9.6 GB): loaded on T5_RANK (rank 2, ND1)
-      - VAE (~0.66 GB): loaded on VAE_RANK (rank 0, ND0)
+      - T5 (~9.6 GB): loaded on T5_RANK
+      - VAE (~0.66 GB): loaded on VAE_RANK
       - DiT/4 (~0.65 GB/rank): loaded on all ranks
     """
     state = PipelineState(rank=rank, world_size=world_size)
@@ -166,7 +163,7 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
     if rank == 0:
         logger.info(f"Spatial: {state.latent_h}x{state.latent_w}, frame_seq_length={state.frame_seq_length}")
 
-    # ── Load T5 on T5_RANK (rank 2, ND1 — separate HBM bank from VAE) ───────
+    # ── Load T5 on T5_RANK (separate rank from VAE) ──────────────────────────
     from wan.modules.tokenizers import HuggingfaceTokenizer
 
     if rank == T5_RANK:
@@ -292,8 +289,8 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
 
     if rank == 0:
         logger.info(f"All models loaded! Pipeline ready.")
-        logger.info(f"  T5 on rank {T5_RANK} (ND{T5_RANK // 2})")
-        logger.info(f"  VAE on rank {VAE_RANK} (ND{VAE_RANK // 2})")
+        logger.info(f"  T5 on rank {T5_RANK}")
+        logger.info(f"  VAE on rank {VAE_RANK}")
         logger.info(f"  DiT TP={TP_DEGREE} on all ranks")
 
     return state
@@ -887,8 +884,8 @@ def main():
         logger.info(f"Wan2.1-T2V-1.3B with Tensor Parallelism (TP={TP_DEGREE})")
         logger.info(f"  World size: {world_size}")
         logger.info(f"  TP degree: {TP_DEGREE}")
-        logger.info(f"  T5 rank: {T5_RANK} (ND{T5_RANK // 2})")
-        logger.info(f"  VAE rank: {VAE_RANK} (ND{VAE_RANK // 2})")
+        logger.info(f"  T5 rank: {T5_RANK}")
+        logger.info(f"  VAE rank: {VAE_RANK}")
         logger.info(f"  Config: {CONFIG_PATH}")
         logger.info(f"  Model: {MODEL_PATH}")
         logger.info(f"  Mode: {'BENCHMARK' if args.benchmark else 'SERVER'}")
