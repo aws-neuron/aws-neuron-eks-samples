@@ -1,6 +1,6 @@
-# Experiment: frames=21, num_frame_per_block=1
-# Testing full GPU resolution (60x104)
-# Resolution: 60x104 (GPU equivalent), frames: 21, block: 1
+# Experiment: frames=9, num_frame_per_block=2
+# Testing memory scaling with increased block size
+# Resolution: 30x52, frames: 9, block: 2
 generator_ckpt: checkpoints/ode_init.pt
 generator_fsdp_wrap_strategy: size
 real_score_fsdp_wrap_strategy: size
@@ -37,17 +37,17 @@ total_batch_size: 64
 log_iters: 100
 negative_prompt: '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走'
 dfake_gen_update_ratio: 5
-# Resolution: 60x104, frames: 21
+# Resolution: 30x52, frames: 9
 image_or_video_shape:
 - 1
-- 21
+- 9
 - 16
-- 60
-- 104
+- 30
+- 52
 distribution_loss: dmd
 trainer: score_distillation
 gradient_checkpointing: true
-num_frame_per_block: 1
+num_frame_per_block: 2
 load_raw_video: false
 model_kwargs:
   timestep_shift: 5.0

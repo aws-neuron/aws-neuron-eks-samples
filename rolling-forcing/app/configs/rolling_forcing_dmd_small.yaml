@@ -1,4 +1,6 @@
 # Smaller resolution config for single-NC fitting
+# Resolution: 30x52 (4x smaller than full 60x104)
+# Fits in ~11GB HBM vs ~22GB for full resolution
 generator_ckpt: checkpoints/ode_init.pt
 generator_fsdp_wrap_strategy: size
 real_score_fsdp_wrap_strategy: size

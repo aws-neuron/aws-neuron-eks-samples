@@ -1,17 +1,17 @@
 """Neuron TP inference entry point for Wan2.1-T2V-1.3B with embedded FastAPI server.
 
 Runs the rolling-forcing pipeline with tensor parallelism across 4 NeuronCores.
-ALL compute on Neuron — compiled via torch.compile(backend='neuron').
+ALL compute on Neuron — compiled via torch.compile(backend='neuron') HYBRID mode.
 
 Compilation strategy:
   - T5:  torch.compile(backend='neuron') — full model (static shape, no state)
   - VAE: torch.compile(backend='neuron') — full model (static shape, no state)
-  - DiT: Sub-module compilation (attention has dynamic KV cache control flow):
+  - DiT: Whole-block compilation (SDK fix preserves .contiguous() for NKI HOP):
       * patch_embedding, text_embedding, time_embedding, time_projection, head — compiled
-      * FFN in each block — compiled (Linear→GELU→Linear, pure)
-      * Self-attention, cross-attention, RoPE — NKI kernels via wrap_nki HOP
-      * Attention orchestration (cache indexing, eviction) — Python (dynamic)
-      * dist.all_reduce — simple call, no chunking needed
+      * Each transformer block — compiled with graph breaks at NKI boundaries
+      * Linear projections, norms, FFN — fused into compiled NEFFs
+      * Self-attention, cross-attention, RoPE — NKI kernels in EAGER mode (@torch.compiler.disable)
+      * dist.all_reduce — handled by Neuron backend inside compiled graph
 
 Usage:
     torchrun --nproc_per_node=4 inference_neuron_tp.py
@@ -225,21 +225,24 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
     # Move TP-sharded DiT to this rank's Neuron core
     state.dit_pipeline.generator.model = state.dit_pipeline.generator.model.to(NEURON_DEVICE)
 
-    # Compile pure (stateless, static-shape) sub-modules within DiT
+    # Compile whole DiT blocks — HYBRID mode:
+    # torch.compile captures the full block including NKI kernels via wrap_nki HOP.
+    # No @torch.compiler.disable — NKI kernels are embedded in the compiled graph.
+    # This fuses Linear projections + norms + FFN while keeping NKI kernels eager.
     dit_model = state.dit_pipeline.generator.model
     dit_model.patch_embedding = torch.compile(dit_model.patch_embedding, backend='neuron', dynamic=False)
     dit_model.text_embedding = torch.compile(dit_model.text_embedding, backend='neuron', dynamic=False)
     dit_model.time_embedding = torch.compile(dit_model.time_embedding, backend='neuron', dynamic=False)
     dit_model.time_projection = torch.compile(dit_model.time_projection, backend='neuron', dynamic=False)
     dit_model.head = torch.compile(dit_model.head, backend='neuron', dynamic=False)
-    # Compile FFN in each block (pure: Linear→GELU→Linear, no state)
-    for block in dit_model.blocks:
-        block.ffn = torch.compile(block.ffn, backend='neuron', dynamic=False)
+    # Compile blocks HYBRID (Linear+norm+FFN compiled, NKI kernels eager via graph breaks)
+    for i, block in enumerate(dit_model.blocks):
+        dit_model.blocks[i] = torch.compile(block, backend='neuron', dynamic=False)
 
     if rank == 0:
         logger.info(f"DiT 1.3B TP-sharded on neuron (rank {rank}, {TP_DEGREE} ranks total)")
-        logger.info(f"  Compiled sub-modules: patch_embed, text_embed, time_embed, time_proj, head, FFN×{len(dit_model.blocks)}")
-        logger.info(f"  NKI kernels: self_attn, cross_attn, rope (via wrap_nki HOP)")
+        logger.info(f"  Compiled HYBRID blocks: {len(dit_model.blocks)} blocks (Linear+norm+FFN compiled, NKI eager)")
+        logger.info(f"  NKI kernels: self_attn, cross_attn, rope (eager via @torch.compiler.disable)")
 
     # ── Load VAE (TP-aware: shard across VAE_RANKS or single rank) ───────────
     if VAE_TP_DEGREE > 1:
@@ -670,11 +673,19 @@ def run_server(state: PipelineState):
 def run_benchmark(state: PipelineState):
     """Rank 0: run streaming pipeline directly, measure FPS, print results, exit."""
     import json
+    from datetime import datetime
 
     num_frames = DEFAULT_NUM_FRAMES
     seed = 42
     prompt = "A cat walking on the beach at sunset, cinematic lighting, 4k"
     fps = DEFAULT_FPS
+
+    # Create timestamped run directory — all outputs go here
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = os.environ.get("OUTPUT_DIR", f"/tmp/rf_run_{timestamp}")
+    frames_dir = os.path.join(run_dir, "frames")
+    os.makedirs(frames_dir, exist_ok=True)
+    logger.info(f"Run output directory: {run_dir}")
 
     logger.info("=" * 60)
     logger.info("  ROLLING FORCING BENCHMARK")
@@ -828,11 +839,9 @@ def run_benchmark(state: PipelineState):
         speedup_needed = fps / steady_state_fps if steady_state_fps > 0 else float('inf')
         print(f"  ⚠️  Need {speedup_needed:.1f}x speedup to reach real-time ({fps}fps playback)")
 
-    # Save individual PNG frames to PVC for quality inspection.
+    # Save individual PNG frames to run directory.
     # We avoid imageio/ffmpeg inside torchrun (fork_exec conflicts).
     # The job YAML will stitch frames into mp4 after torchrun exits.
-    frames_dir = "/var/mdl/rolling_forcing/frames"
-    os.makedirs(frames_dir, exist_ok=True)
     try:
         logger.info(f"Saving {len(all_frame_arrays)} frames as PNGs to {frames_dir}/ ...")
         for i, frame in enumerate(all_frame_arrays):
@@ -842,10 +851,20 @@ def run_benchmark(state: PipelineState):
     except Exception as e:
         logger.warning(f"Failed to save frames: {e}")
 
+    # Save benchmark results JSON to run directory
+    results["run_dir"] = run_dir
+    results_path = os.path.join(run_dir, "benchmark.json")
+    try:
+        with open(results_path, "w") as f:
+            json.dump(results, f, indent=2)
+        logger.info(f"Benchmark results saved: {results_path}")
+    except Exception as e:
+        logger.warning(f"Failed to save benchmark.json: {e}")
+
     print()
     print(json.dumps(results, indent=2))
     print()
-    logger.info("Benchmark complete!")
+    logger.info(f"Benchmark complete! All outputs in: {run_dir}")
 
     # Signal workers to exit
     cmd = CMD_SHUTDOWN.to(NEURON_DEVICE)

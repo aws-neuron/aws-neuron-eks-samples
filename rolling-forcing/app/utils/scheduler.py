@@ -1,5 +1,6 @@
 from abc import abstractmethod, ABC
 import torch
+import torch_neuronx
 
 
 class SchedulerInterface(ABC):

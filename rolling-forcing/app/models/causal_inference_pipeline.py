@@ -298,8 +298,10 @@ class CausalInferencePipeline(torch.nn.Module):
 
             if not async_mode and profile:
                 _t = time.perf_counter()
-            output[:, current_start_frame:current_start_frame + max_frames].copy_(
-                denoised_pred)
+            copy_end = min(current_start_frame + max_frames, output.shape[1])
+            copy_len = copy_end - current_start_frame
+            output[:, current_start_frame:copy_end].copy_(
+                denoised_pred[:, :copy_len])
             if not async_mode and profile:
                 _t_output_copy = (time.perf_counter() - _t) * 1000
 

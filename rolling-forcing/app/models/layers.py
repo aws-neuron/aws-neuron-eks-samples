@@ -503,6 +503,10 @@ class WanT2VCrossAttention(nn.Module):
         self.register_buffer('identity', torch.eye(self.head_dim), persistent=False)
         self.softmax_scale = 1.0 / math.sqrt(self.head_dim)
 
+    def _call_cross_attn_nki(self, q_nki, k_nki, v_nki):
+        """Call cross-attention NKI kernel (wrap_nki HOP handles torch.compile integration)."""
+        return wan_cross_attn(q_nki, k_nki, v_nki, self.identity, softmax_scale=self.softmax_scale)
+
     def forward(self, x, context, context_lens, crossattn_cache=None):
         r"""
         Args:
@@ -542,41 +546,26 @@ class WanT2VCrossAttention(nn.Module):
         # Reshape for wan_cross_attn kernel:
         # kernel expects q (bs, d, seq_q), k (bs, d, seq_k), v (bs, seq_k, d)
         # where bs = num_heads (B=1, heads become kernel batch dimension)
-        if q.device.type == "neuron" and NKI_AVAILABLE:
-            if _profiling:
-                _tc3 = time.perf_counter()
-            q_nki = q[0].permute(1, 2, 0).contiguous()   # [num_heads, head_dim, L1]
-            k_nki = k[0].permute(1, 2, 0).contiguous()   # [num_heads, head_dim, L2]
-            v_nki = v[0].permute(1, 0, 2).contiguous()   # [num_heads, L2, head_dim]
-            # Pad seqlen_q to multiple of 128 (NKI tile size)
-            seqlen_q = q_nki.shape[2]
-            P = 128
-            pad = (P - seqlen_q % P) % P
-            if pad > 0:
-                q_nki = torch.nn.functional.pad(q_nki, (0, pad))
-            if _profiling:
-                _t_reshape = (time.perf_counter() - _tc3) * 1000
-                _tc4 = time.perf_counter()
-            x_nki = wan_cross_attn(q_nki, k_nki, v_nki, self.identity, softmax_scale=self.softmax_scale)
-            if _profiling:
-                _t_kernel = (time.perf_counter() - _tc4) * 1000
-            # kernel output: [seqlen_q_padded, num_heads, head_dim] → slice to [L1, num_heads, head_dim]
-            x = x_nki[:seqlen_q].unsqueeze(0).flatten(2)
-        else:
-            if _profiling:
-                _tc3 = time.perf_counter()
-            q = q.permute(0, 2, 1, 3)
-            k = k.permute(0, 2, 1, 3)
-            v = v.permute(0, 2, 1, 3)
-            import torch.nn.functional as F
-            attn_out = F.scaled_dot_product_attention(q, k, v)
-            if _profiling:
-                _t_reshape = (time.perf_counter() - _tc3) * 1000
-                _tc4 = time.perf_counter()
-            # attn_out: [B, num_heads, L1, head_dim] → [B, L1, C]
-            x = attn_out.permute(0, 2, 1, 3).flatten(2)
-            if _profiling:
-                _t_kernel = (time.perf_counter() - _tc4) * 1000
+        # Always use NKI path (no device check — avoids graph breaks in torch.compile)
+        if _profiling:
+            _tc3 = time.perf_counter()
+        q_nki = q[0].permute(1, 2, 0).contiguous()   # [num_heads, head_dim, L1]
+        k_nki = k[0].permute(1, 2, 0).contiguous()   # [num_heads, head_dim, L2]
+        v_nki = v[0].permute(1, 0, 2).contiguous()   # [num_heads, L2, head_dim]
+        # Pad seqlen_q to multiple of 128 (NKI tile size)
+        seqlen_q = q_nki.shape[2]
+        P = 128
+        pad = (P - seqlen_q % P) % P
+        if pad > 0:
+            q_nki = torch.nn.functional.pad(q_nki, (0, pad))
+        if _profiling:
+            _t_reshape = (time.perf_counter() - _tc3) * 1000
+            _tc4 = time.perf_counter()
+        x_nki = self._call_cross_attn_nki(q_nki, k_nki, v_nki)
+        if _profiling:
+            _t_kernel = (time.perf_counter() - _tc4) * 1000
+        # kernel output: [seqlen_q_padded, num_heads, head_dim] → slice to [L1, num_heads, head_dim]
+        x = x_nki[:seqlen_q].unsqueeze(0).flatten(2)
         if _profiling:
             _tc6 = time.perf_counter()
         x = self.o(x)
@@ -643,6 +632,12 @@ class CausalWanSelfAttention(nn.Module):
         # Self-attention NKI kernel
         self._self_attn_kernel = wan_flash_self_attn_nki
 
+    def _call_self_attn_nki(self, q, k, v, identity, mask, softmax_scale, num_sections):
+        """Call self-attention NKI kernel (wrap_nki HOP handles torch.compile integration)."""
+        return self._self_attn_kernel(q, k, v, identity, mask,
+                                      softmax_scale=softmax_scale,
+                                      num_sections=num_sections)
+
     def cache_copy_inplace(self, k_dst, k_src, v_dst=None, v_src=None):
         """Cache copy via tensor.copy_() — already uses optimal DMA on Neuron.
         NKI kv_cache_copy cannot work in standard neuronxcc.nki (immutable params)."""
@@ -677,12 +672,7 @@ class CausalWanSelfAttention(nn.Module):
 
         Returns: [1, seq_len, N, D] bfloat16 (same dtype as input)
         """
-        # Use PyTorch fallback if not on Neuron OR if NKI rope is not available
-        if x.device.type != "neuron" or not self._rope_nki_available:
-            return causal_rope_apply(
-                x, grid_sizes, freqs_cos, freqs_sin, start_frame=start_frame
-            ).type_as(x)
-
+        # Always use NKI path (no device check — avoids graph breaks in torch.compile)
         b, s, n, d = x.shape
         f, h, w = grid_sizes
         seq_len = f * h * w
@@ -915,39 +905,30 @@ class CausalWanSelfAttention(nn.Module):
         k_kern = buffer_k[0].permute(1, 2, 0).contiguous()        # [N, D, seq_k]
         v_kern = buffer_v[0].permute(1, 0, 2).contiguous()        # [N, seq_k, D]
 
-        if q_kern.device.type == "neuron" and self._nki_available:
-            seqlen_k = k_kern.shape[2]
-            seqlen_q_orig = q_kern.shape[2]
-            assert seqlen_k % ATTN_SEQLEN_MULTIPLE == 0, f"k seqlen {seqlen_k} not multiple of {ATTN_SEQLEN_MULTIPLE}"
+        # Always use NKI path (no device check — avoids graph breaks in torch.compile)
+        seqlen_k = k_kern.shape[2]
+        seqlen_q_orig = q_kern.shape[2]
 
-            # Pad seq_q to multiple of 128 (NKI tile size)
-            P = 128
-            pad_q = (P - seqlen_q_orig % P) % P
-            if pad_q > 0:
-                q_kern = torch.nn.functional.pad(q_kern, (0, pad_q))
+        # Pad seq_q to multiple of 128 (NKI tile size)
+        P = 128
+        pad_q = (P - seqlen_q_orig % P) % P
+        if pad_q > 0:
+            q_kern = torch.nn.functional.pad(q_kern, (0, pad_q))
 
-            # Build mask: (128, seqlen_k) bf16, 0 for valid positions, -inf for masked
-            mask = torch.zeros((P, seqlen_k), dtype=torch.bfloat16, device=q_kern.device)
-            if k_len_int < seqlen_k:
-                mask[:, k_len_int:] = float('-inf')
+        # Build mask: (128, seqlen_k) bf16, 0 for valid positions, -inf for masked
+        mask = torch.zeros((P, seqlen_k), dtype=torch.bfloat16, device=q_kern.device)
+        if k_len_int < seqlen_k:
+            mask[:, k_len_int:] = float('-inf')
 
-            num_sections = seqlen_k // ATTN_SEQLEN_MULTIPLE
+        num_sections = seqlen_k // ATTN_SEQLEN_MULTIPLE
 
-            x = self._self_attn_kernel(
-                q_kern, k_kern, v_kern, self.identity, mask,
-                softmax_scale=self.softmax_scale,
-                num_sections=num_sections,
-            )
-            # Output: [seq_q_padded, N, D] bfloat16 → slice to [seq_q, N, D] → [1, seq_q, C]
-            x = x[:seqlen_q_orig].unsqueeze(0).flatten(2)
-        else:
-            # PyTorch fallback (CPU or Neuron without NKI)
-            import torch.nn.functional as F
-            q_attn = roped_query.permute(0, 2, 1, 3)
-            k_attn = buffer_k[:, :k_len_int].permute(0, 2, 1, 3)
-            v_attn = buffer_v[:, :k_len_int].permute(0, 2, 1, 3)
-            attn_out = F.scaled_dot_product_attention(q_attn, k_attn, v_attn)
-            x = attn_out.permute(0, 2, 1, 3).flatten(2)
+        x = self._call_self_attn_nki(
+            q_kern, k_kern, v_kern, self.identity, mask,
+            softmax_scale=self.softmax_scale,
+            num_sections=num_sections,
+        )
+        # Output: [seq_q_padded, N, D] bfloat16 → slice to [seq_q, N, D] → [1, seq_q, C]
+        x = x[:seqlen_q_orig].unsqueeze(0).flatten(2)
 
         if _profiling:
             _t_attention = (time.perf_counter() - _t4) * 1000

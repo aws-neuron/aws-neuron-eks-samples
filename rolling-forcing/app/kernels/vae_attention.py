@@ -20,9 +20,9 @@ Production shapes:
 
 NKI API: bundled neuronxcc.nki.isa return-style.
 """
-import neuronxcc.nki as nki
-import neuronxcc.nki.language as nl
-import neuronxcc.nki.isa as nisa
+import nki
+import nki.language as nl
+import nki.isa as nisa
 
 
 @nki.jit

@@ -12,9 +12,9 @@ Weight layout: TRANSPOSED — weight_T is (C_in, C_out) so nc_matmul gives W @ i
 
 NKI API: bundled neuronxcc.nki.isa return-style (same as cross_attention.py).
 """
-import neuronxcc.nki as nki
-import neuronxcc.nki.language as nl
-import neuronxcc.nki.isa as nisa
+import nki
+import nki.language as nl
+import nki.isa as nisa
 
 
 @nki.jit

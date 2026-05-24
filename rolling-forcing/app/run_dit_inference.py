@@ -1,11 +1,11 @@
-"""Standalone DiT inference on Neuron.
+"""Standalone DiT inference on Neuron with NKI kernels.
 
 Step 1 of the pipeline: Takes text embeddings and runs the CausalWanModel
 diffusion denoising loop. Outputs raw latents to disk.
 
 Usage:
     python run_dit_inference.py \
-        --config_path configs/rolling_forcing_dmd.yaml \
+        --config_path configs/rolling_forcing_dmd_small.yaml \
         --embedding_path embeds/prompt.pt \
         --output_path latents.pt \
         --num_output_frames 21
@@ -17,6 +17,7 @@ from collections import OrderedDict
 import torch
 from omegaconf import OmegaConf
 
+# Use NKI-optimized models from models/ directory
 from models.causal_inference_pipeline import CausalInferencePipeline
 
 
@@ -41,7 +42,7 @@ def main():
                         help="Device to run on (neuron or cpu)")
     args = parser.parse_args()
     
-    print(f"[run_dit_inference] Starting DiT inference")
+    print(f"[run_dit_inference] Starting DiT inference with NKI kernels")
     print(f"  Config: {args.config_path}")
     print(f"  Embedding: {args.embedding_path}")
     print(f"  Output: {args.output_path}")
@@ -70,8 +71,8 @@ def main():
     frame_seq_length = (latent_height * latent_width) // 4
     print(f"[run_dit_inference] Spatial: {latent_height}x{latent_width}, frame_seq_length={frame_seq_length}")
 
-    # Build pipeline
-    print("[run_dit_inference] Building CausalInferencePipeline...")
+    # Build pipeline with NKI-optimized CausalInferencePipeline
+    print("[run_dit_inference] Building CausalInferencePipeline (NKI kernels)...")
     pipe = CausalInferencePipeline(
         denoising_step_list=config.denoising_step_list,
         num_frame_per_block=getattr(config, "num_frame_per_block", 3),

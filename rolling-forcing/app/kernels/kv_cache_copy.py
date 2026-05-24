@@ -9,9 +9,9 @@ Adapted from kernel_builder API to standard neuronxcc.nki:
 - nb.ds → nl.ds
 - nisa.dma_copy(dst=, src=) keyword-only
 """
-import neuronxcc.nki as nki
-import neuronxcc.nki.language as nl
-import neuronxcc.nki.isa as nisa
+import nki
+import nki.language as nl
+import nki.isa as nisa
 
 
 @nki.jit

@@ -125,14 +125,13 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             new_frame_length: tokens per frame (H * W after patch embed)
             num_frame_per_block: frames per block from config (default 3)
         """
-        block_length = num_frame_per_block * new_frame_length
         for block in self.blocks:
             attn = block.self_attn
             attn.frame_length = new_frame_length
-            attn.block_length = block_length
+            attn.block_length = num_frame_per_block * new_frame_length
             attn.max_attention_size = 21 * new_frame_length
             attn.kv_cache_logical_size = 24 * new_frame_length
-        print(f"[CausalWanModel] Updated frame_length={new_frame_length}, block_length={block_length} in {len(self.blocks)} blocks")
+        print(f"[CausalWanModel] Updated frame_length={new_frame_length}, block_length={num_frame_per_block * new_frame_length} in {len(self.blocks)} blocks")
 
     def _forward_inference(
         self,

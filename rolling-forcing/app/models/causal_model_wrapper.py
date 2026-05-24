@@ -39,8 +39,11 @@ class WanDiffusionWrapper(torch.nn.Module):
             kwargs["num_layers"] = num_layers
         self.model = CausalWanModel.from_pretrained(
             f"wan_models/{model_name}/", **kwargs)
-        self.model._update_frame_length(frame_length, num_frame_per_block)
         self.model.eval()
+        
+        # Ensure frame_length is propagated to all attention blocks
+        # (from_pretrained may load from config with different frame_length)
+        self._update_frame_length(frame_length, num_frame_per_block)
         self._convert_flow_pred_to_x0 = jit(convert_flow_pred_to_x0)
 
         self.scheduler = FlowMatchScheduler(
@@ -118,5 +121,25 @@ class WanDiffusionWrapper(torch.nn.Module):
         self.scheduler = scheduler
         return scheduler
 
+    def _update_frame_length(self, frame_length, num_frame_per_block=3):
+        """Update frame_length in all attention blocks post-load.
+        
+        This ensures the attention layer cache sizes match the actual
+        spatial resolution from the config, not the saved model config.
+        
+        Args:
+            frame_length: tokens per frame (H * W after patch embed)
+            num_frame_per_block: frames per block from config (default 3)
+        """
+        block_length = num_frame_per_block * frame_length
+        for block in self.model.blocks:
+            attn = block.self_attn
+            attn.frame_length = frame_length
+            attn.block_length = block_length
+            attn.max_attention_size = 21 * frame_length
+            attn.kv_cache_logical_size = 24 * frame_length
+        print(f"[WanDiffusionWrapper] Updated frame_length={frame_length}, block_length={block_length} in {len(self.model.blocks)} blocks")
+
     def post_init(self):
         self.get_scheduler()
+
