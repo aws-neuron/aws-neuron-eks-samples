@@ -52,7 +52,7 @@ def vae_conv2d_k1(input_2d, weight_T, bias, HW):
         bias_sbuf = nl.ndarray((P, 1), dtype=nl.float32, buffer=nl.sbuf)
         b_load = nl.ndarray((P, 1), dtype=bias.dtype, buffer=nl.sbuf)
         nisa.dma_copy(dst=b_load, src=bias[nl.ds(co, P), 0:1])
-        bias_sbuf[:, 0:1] = nisa.tensor_copy(b_load, dtype=nl.float32)
+        bias_sbuf[:, 0:1] = nl.copy(b_load, dtype=nl.float32)
 
         for sp_t in nl.sequential_range(num_sp_tiles):
             sp = sp_t * SPATIAL_TILE
@@ -74,14 +74,14 @@ def vae_conv2d_k1(input_2d, weight_T, bias, HW):
 
                 # nc_matmul: w_chunk.T @ inp_chunk = W[co:co+P, ci:ci+P] @ input[ci:ci+P, sp:sp+512]
                 mm = nisa.nc_matmul(w_chunk, inp_chunk)
-                mm_sbuf = nisa.tensor_copy(mm)
+                mm_sbuf = nl.copy(mm)
                 acc[...] = nisa.tensor_tensor(acc, mm_sbuf, nl.add)
 
             # Add bias (broadcast along spatial dim)
             acc[...] = nisa.tensor_tensor(acc, bias_sbuf, nl.add)
 
             # Store
-            out_tile = nisa.tensor_copy(acc, dtype=input_2d.dtype)
+            out_tile = nl.copy(acc, dtype=input_2d.dtype)
             nisa.dma_copy(dst=output[nl.ds(co, P), nl.ds(sp, SPATIAL_TILE)], src=out_tile)
 
     return output
@@ -124,7 +124,7 @@ def vae_conv2d_k3_shifted(shifted_inputs, weight_slices_T, bias, num_positions):
         bias_sbuf = nl.ndarray((P, 1), dtype=nl.float32, buffer=nl.sbuf)
         b_load = nl.ndarray((P, 1), dtype=bias.dtype, buffer=nl.sbuf)
         nisa.dma_copy(dst=b_load, src=bias[nl.ds(co, P), 0:1])
-        bias_sbuf[:, 0:1] = nisa.tensor_copy(b_load, dtype=nl.float32)
+        bias_sbuf[:, 0:1] = nl.copy(b_load, dtype=nl.float32)
 
         for sp_t in nl.sequential_range(num_sp_tiles):
             sp = sp_t * SPATIAL_TILE
@@ -152,13 +152,13 @@ def vae_conv2d_k3_shifted(shifted_inputs, weight_slices_T, bias, num_positions):
 
                     # nc_matmul: w_chunk.T @ inp_chunk = W_slice[co:co+P, ci:ci+P] @ shifted_input
                     mm = nisa.nc_matmul(w_chunk, inp_chunk)
-                    mm_sbuf = nisa.tensor_copy(mm)
+                    mm_sbuf = nl.copy(mm)
                     acc[...] = nisa.tensor_tensor(acc, mm_sbuf, nl.add)
 
             # Add bias
             acc[...] = nisa.tensor_tensor(acc, bias_sbuf, nl.add)
 
-            out_tile = nisa.tensor_copy(acc, dtype=shifted_inputs.dtype)
+            out_tile = nl.copy(acc, dtype=shifted_inputs.dtype)
             nisa.dma_copy(dst=output[nl.ds(co, P), nl.ds(sp, SPATIAL_TILE)], src=out_tile)
 
     return output

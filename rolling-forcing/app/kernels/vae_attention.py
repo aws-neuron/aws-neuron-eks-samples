@@ -91,10 +91,10 @@ def vae_self_attention(q, k, v, identity, softmax_scale=None):
                     # nc_matmul: Q[P,P].T @ K_chunk[P,512] → [P, 512]
                     # Moving operand is K_chunk[128,512] — within 512 limit ✓
                     qk_psum = nisa.nc_matmul(q_buf, k_chunk)
-                    qk_sbuf = nisa.tensor_copy(qk_psum)
+                    qk_sbuf = nl.copy(qk_psum)
 
                     # Accumulate into the right seq_k columns
-                    qk_slice = nisa.tensor_copy(qk_acc[:, nl.ds(sk_off, CHUNK)])
+                    qk_slice = nl.copy(qk_acc[:, nl.ds(sk_off, CHUNK)])
                     qk_updated = nisa.tensor_tensor(qk_slice, qk_sbuf, nl.add)
                     # Write back (in-place update via copy)
                     nisa.dma_copy(dst=qk_acc[:, nl.ds(sk_off, CHUNK)], src=qk_updated)
@@ -125,7 +125,7 @@ def vae_self_attention(q, k, v, identity, softmax_scale=None):
             row_sum_recip = nisa.reciprocal(row_sum)
 
             # Cast exp to bf16 for PV matmul
-            exp_bf16 = nisa.tensor_copy(exp_qk, dtype=nl.bfloat16)
+            exp_bf16 = nl.copy(exp_qk, dtype=nl.bfloat16)
 
             # ── Phase 3: PV matmul ──
             # attn @ V: [P, seq_k] @ [seq_k, d] → [P, d]
@@ -150,11 +150,11 @@ def vae_self_attention(q, k, v, identity, softmax_scale=None):
                                   src=v[batch_id, nl.ds(v_start, P), nl.ds(dc_start_rem, d_rem)])
 
                 # Extract attn weights: [P, P] from exp_bf16
-                attn_chunk = nisa.tensor_copy(exp_bf16[:, nl.ds(v_start, P)])
+                attn_chunk = nl.copy(exp_bf16[:, nl.ds(v_start, P)])
 
                 # Transpose via identity matmul trick
                 attn_T_psum = nisa.nc_matmul(attn_chunk, id_sbuf)
-                attn_T = nisa.tensor_copy(attn_T_psum)
+                attn_T = nl.copy(attn_T_psum)
 
                 # nc_matmul: attn_T[P,P].T @ V[P,d]
                 # V has free dim = d, which could be 256/512/1024
@@ -163,25 +163,25 @@ def vae_self_attention(q, k, v, identity, softmax_scale=None):
                 d_mat_rem = d % CHUNK
                 for dmc in range(d_mat_chunks):
                     dmc_start = dmc * CHUNK
-                    v_d_chunk = nisa.tensor_copy(v_tile[:, nl.ds(dmc_start, CHUNK)])
+                    v_d_chunk = nl.copy(v_tile[:, nl.ds(dmc_start, CHUNK)])
                     pv_chunk = nisa.nc_matmul(attn_T, v_d_chunk)
-                    pv_s = nisa.tensor_copy(pv_chunk)
-                    existing = nisa.tensor_copy(pv_accum[:, nl.ds(dmc_start, CHUNK)])
+                    pv_s = nl.copy(pv_chunk)
+                    existing = nl.copy(pv_accum[:, nl.ds(dmc_start, CHUNK)])
                     updated = nisa.tensor_tensor(existing, pv_s, nl.add)
                     nisa.dma_copy(dst=pv_accum[:, nl.ds(dmc_start, CHUNK)], src=updated)
 
                 if d_mat_rem > 0:
                     dmc_start_rem = d_mat_chunks * CHUNK
-                    v_d_rem = nisa.tensor_copy(v_tile[:, nl.ds(dmc_start_rem, d_mat_rem)])
+                    v_d_rem = nl.copy(v_tile[:, nl.ds(dmc_start_rem, d_mat_rem)])
                     pv_rem = nisa.nc_matmul(attn_T, v_d_rem)
-                    pv_rem_s = nisa.tensor_copy(pv_rem)
-                    existing_rem = nisa.tensor_copy(pv_accum[:, nl.ds(dmc_start_rem, d_mat_rem)])
+                    pv_rem_s = nl.copy(pv_rem)
+                    existing_rem = nl.copy(pv_accum[:, nl.ds(dmc_start_rem, d_mat_rem)])
                     updated_rem = nisa.tensor_tensor(existing_rem, pv_rem_s, nl.add)
                     nisa.dma_copy(dst=pv_accum[:, nl.ds(dmc_start_rem, d_mat_rem)], src=updated_rem)
 
             # ── Phase 4: Normalize and store ──
             pv_normed = nisa.tensor_tensor(pv_accum, row_sum_recip, nl.multiply)
-            pv_out = nisa.tensor_copy(pv_normed, dtype=q.dtype)
+            pv_out = nl.copy(pv_normed, dtype=q.dtype)
 
             nisa.dma_copy(
                 dst=out[nl.ds(q_start, P), batch_id, :d],
