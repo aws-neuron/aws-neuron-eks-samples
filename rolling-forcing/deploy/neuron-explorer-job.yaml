@@ -1,0 +1,206 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rolling-forcing-neuron-explorer
+  namespace: default
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: explorer
+          image: 621547421844.dkr.ecr.us-west-2.amazonaws.com/native-pytorch:eager-sdk2.x.x-ubuntu22.04-torchneuroneager-cp312-74524059227
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - "-c"
+            - |
+              set -x
+              
+              # ═══════════════════════════════════════════════════════════════
+              # Rolling Forcing — Neuron Profile Explorer
+              # Analyzes profile artifacts from rolling-forcing-job
+              # Components profiled: T5 encoder + DiT (TP=4) + VAE decoder
+              #
+              # Usage:
+              #   Default: analyzes the LATEST run
+              #   Set PROFILE_RUN env var to target a specific run:
+              #     e.g. PROFILE_RUN="20260524_062139"
+              # ═══════════════════════════════════════════════════════════════
+              
+              RUNS_BASE="/var/mdl/rolling_forcing/runs"
+              
+              echo "============================================"
+              echo "  ROLLING FORCING — NEURON EXPLORER"
+              echo "  Runs base: $RUNS_BASE"
+              echo "============================================"
+              echo ""
+              
+              # ─── Find run directory ─────────────────────────────────────
+              echo "=== Available runs ==="
+              ls -lt "$RUNS_BASE/" 2>/dev/null | head -10
+              
+              if [[ -n "${PROFILE_RUN:-}" ]]; then
+                echo ""
+                echo "Using specified run: PROFILE_RUN=$PROFILE_RUN"
+                LATEST_RUN="$PROFILE_RUN"
+              else
+                LATEST_RUN=$(ls -t "$RUNS_BASE/" 2>/dev/null | head -1)
+                echo ""
+                echo "No PROFILE_RUN specified — using latest: $LATEST_RUN"
+              fi
+              
+              if [[ -z "$LATEST_RUN" ]]; then
+                echo "ERROR: No runs found in $RUNS_BASE"
+                echo "Run rolling-forcing-job.yaml first!"
+                exit 1
+              fi
+              
+              RUN_DIR="$RUNS_BASE/$LATEST_RUN"
+              PROFILE_BASE="$RUN_DIR/profiles"
+              OUTPUT_DIR="$RUN_DIR/profile_json_output"
+              mkdir -p "$OUTPUT_DIR"
+              
+              echo "Using run: $RUN_DIR"
+              echo "Profile dir: $PROFILE_BASE"
+              echo "Output dir: $OUTPUT_DIR"
+              echo ""
+              
+              if [[ ! -d "$PROFILE_BASE" || -z "$(ls -A $PROFILE_BASE 2>/dev/null)" ]]; then
+                echo "ERROR: No profiles found in $PROFILE_BASE"
+                echo "Re-run rolling-forcing-job.yaml with ENABLE_PROFILING=true"
+                exit 1
+              fi
+              
+              # Find the actual ntff directory (may be nested under instance_id/session_id)
+              PROFILE_DIR=$(find "$PROFILE_BASE" -name "*.ntff" -printf '%h\n' 2>/dev/null | head -1)
+              if [[ -z "$PROFILE_DIR" ]]; then
+                # Fallback: use the top-level directory
+                PROFILE_DIR="$PROFILE_BASE"
+              fi
+              
+              echo ""
+              echo "Using profile directory: $PROFILE_DIR"
+              echo ""
+              
+              # ─── Summary text output ───────────────────────────────────────
+              echo "=== Running neuron-explorer view (summary-text, skip DMA) ==="
+              neuron-explorer view -d "$PROFILE_DIR" \
+                --output-format summary-text \
+                --ignore-dma-trace 2>&1 | tee "$OUTPUT_DIR/rolling_forcing_summary.txt"
+              
+              echo ""
+              echo "=== Running neuron-explorer view (JSON output, skip DMA) ==="
+              neuron-explorer view -d "$PROFILE_DIR" \
+                --output-format json \
+                --output-file "$OUTPUT_DIR/rolling_forcing_profile.json" \
+                --ignore-dma-trace 2>&1 | tee "$OUTPUT_DIR/rolling_forcing_json.log"
+              
+              echo ""
+              echo "=== Listing output files ==="
+              find "$OUTPUT_DIR" -type f -ls
+              
+              # ─── NEFF analysis ─────────────────────────────────────────────
+              echo ""
+              echo "============================================"
+              echo "  NEFF COUNT AND SIZE DISTRIBUTION"
+              echo "  (Rolling Forcing: T5 + DiT + VAE)"
+              echo "============================================"
+              
+              NEFF_COUNT=$(find "$PROFILE_DIR" -name "*.neff" 2>/dev/null | wc -l)
+              echo "Total NEFFs: ${NEFF_COUNT}"
+              echo ""
+              
+              find "$PROFILE_DIR" -name "*.neff" -exec ls -l {} \; 2>/dev/null | awk '{print $5}' | sort -n | awk '
+                BEGIN { count=0; sum=0 }
+                { sizes[count++]=$1; sum+=$1 }
+                END {
+                  if (count == 0) { print "No NEFFs found"; exit }
+                  printf "Total size: %.2f MB\n", sum/1024/1024
+                  printf "Min: %d bytes\n", sizes[0]
+                  printf "Max: %d bytes (%.2f MB)\n", sizes[count-1], sizes[count-1]/1024/1024
+                  printf "Median: %d bytes\n", sizes[int(count/2)]
+                  printf "Mean: %.0f bytes\n", sum/count
+                  printf "\nSize buckets:\n"
+                  small=0; med=0; large=0; xlarge=0
+                  for(i=0;i<count;i++) {
+                    if(sizes[i]<10000) small++
+                    else if(sizes[i]<100000) med++
+                    else if(sizes[i]<1000000) large++
+                    else xlarge++
+                  }
+                  printf "  <10KB  (tiny ops — kernel launch overhead):  %d\n", small
+                  printf "  10-100KB (small — partially fused):          %d\n", med
+                  printf "  100KB-1MB (medium — well fused):             %d\n", large
+                  printf "  >1MB  (large — fully fused layers/blocks):   %d\n", xlarge
+                  printf "\n"
+                  if (small > count * 0.5) {
+                    printf "⚠️  WARNING: >50%% tiny NEFFs — significant kernel launch overhead!\n"
+                    printf "   Consider fusing more operations (whole-block compilation).\n"
+                  } else if (xlarge > count * 0.3) {
+                    printf "✅ Good fusion: >30%% of NEFFs are large (>1MB).\n"
+                  }
+                }
+              '
+              
+              # ─── Top NEFFs ─────────────────────────────────────────────────
+              echo ""
+              echo "=== Top 10 LARGEST NEFFs (main compute kernels) ==="
+              find "$PROFILE_DIR" -name "*.neff" -exec ls -lhS {} \; 2>/dev/null | sort -k5 -h -r | head -10
+              
+              echo ""
+              echo "=== Top 10 SMALLEST NEFFs (fusion candidates) ==="
+              find "$PROFILE_DIR" -name "*.neff" -exec ls -lhS {} \; 2>/dev/null | sort -k5 -h | head -10
+              
+              # ─── Component breakdown (heuristic by path/name) ──────────────
+              echo ""
+              echo "============================================"
+              echo "  COMPONENT BREAKDOWN (by NEFF path)"
+              echo "============================================"
+              echo ""
+              echo "DiT-related NEFFs (attention, ffn, embedding):"
+              find "$PROFILE_DIR" -name "*.neff" -path "*dit*" -o -name "*.neff" -path "*block*" -o -name "*.neff" -path "*attn*" -o -name "*.neff" -path "*ffn*" 2>/dev/null | wc -l
+              echo ""
+              echo "VAE-related NEFFs:"
+              find "$PROFILE_DIR" -name "*.neff" -path "*vae*" -o -name "*.neff" -path "*decoder*" 2>/dev/null | wc -l
+              echo ""
+              echo "T5-related NEFFs:"
+              find "$PROFILE_DIR" -name "*.neff" -path "*t5*" -o -name "*.neff" -path "*encoder*" 2>/dev/null | wc -l
+              echo ""
+              echo "Other/unclassified NEFFs:"
+              find "$PROFILE_DIR" -name "*.neff" 2>/dev/null | grep -v -E "dit|block|attn|ffn|vae|decoder|t5|encoder" | wc -l
+              
+              # ─── NTFF trace files ──────────────────────────────────────────
+              echo ""
+              echo "============================================"
+              echo "  NTFF TRACE FILES"
+              echo "============================================"
+              find "$PROFILE_DIR" -name "*.ntff" -exec ls -lh {} \; 2>/dev/null
+              
+              echo ""
+              echo "============================================"
+              echo "  DONE — Results saved to:"
+              echo "    $OUTPUT_DIR/rolling_forcing_summary.txt"
+              echo "    $OUTPUT_DIR/rolling_forcing_profile.json"
+              echo "============================================"
+          resources:
+            requests:
+              cpu: 22
+              memory: 220Gi
+            limits:
+              cpu: 22
+              memory: 220Gi
+          volumeMounts:
+            - name: 621547421844-ap-southeast-4-pvc
+              mountPath: /var/mdl
+          env:
+            # Set PROFILE_RUN to a specific run timestamp to analyze that run.
+            # Leave empty or unset to use the latest run.
+            # Example: "20260524_062139"
+            - name: PROFILE_RUN
+              value: ""
+      volumes:
+        - name: 621547421844-ap-southeast-4-pvc
+          persistentVolumeClaim:
+            claimName: 621547421844-ap-southeast-4-pvc

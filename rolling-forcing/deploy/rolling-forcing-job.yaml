@@ -236,7 +236,7 @@ spec:
               value: "false"
             # Set to "true" to enable neuron device profiling (captures NTFF traces)
             - name: ENABLE_PROFILING
-              value: "false"
+              value: "true"
             - name: VALIDATE_PIPELINE
               value: "1"
             - name: CONFIG_PATH
