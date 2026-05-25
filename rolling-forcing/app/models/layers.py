@@ -654,9 +654,9 @@ class CausalWanSelfAttention(nn.Module):
             seq_k = k.shape[2]
             # QK^T: [N, seq_q, seq_k]
             scores = torch.matmul(q.transpose(1, 2), k) * softmax_scale
-            # Apply mask (broadcast from [128, seq_k] to [N, seq_q, seq_k])
-            # mask has 0 for valid, -inf for invalid
-            scores = scores + mask[:seq_q].unsqueeze(0)
+            # Apply mask: mask is (128, seq_k) with 0=valid, -inf=invalid
+            # All rows are identical — take row 0 and broadcast as [1, 1, seq_k]
+            scores = scores + mask[0:1].unsqueeze(0)
             attn = torch.softmax(scores.float(), dim=-1).to(q.dtype)
             # attn @ v: [N, seq_q, D]
             out = torch.matmul(attn, v)
