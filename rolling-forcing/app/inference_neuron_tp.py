@@ -667,72 +667,51 @@ def run_server(state: PipelineState):
 
 # ─── Benchmark mode (no server) ──────────────────────────────────────────────
 
-def run_benchmark(state: PipelineState):
-    """Rank 0: run streaming pipeline directly, measure FPS, print results, exit."""
-    import json
-    from datetime import datetime
+def _run_single_generation(state: PipelineState, prompt: str, num_frames: int, seed: int):
+    """Run a single streaming generation, return (per_block, frame_arrays, t5_time).
 
-    num_frames = DEFAULT_NUM_FRAMES
-    seed = 42
-    prompt = "A cat walking on the beach at sunset, cinematic lighting, 4k"
-    fps = DEFAULT_FPS
-
-    # Create timestamped run directory — all outputs go here
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = os.environ.get("OUTPUT_DIR", f"/tmp/rf_run_{timestamp}")
-    frames_dir = os.path.join(run_dir, "frames")
-    os.makedirs(frames_dir, exist_ok=True)
-    logger.info(f"Run output directory: {run_dir}")
-
-    logger.info("=" * 60)
-    logger.info("  ROLLING FORCING BENCHMARK")
-    logger.info(f"  Model: Wan2.1-T2V-1.3B | TP={TP_DEGREE} | Device: Trainium2")
-    logger.info(f"  Frames: {num_frames} | Seed: {seed}")
-    logger.info("=" * 60)
-
+    This is the core generation loop extracted for reuse in warmup + benchmark runs.
+    """
     torch.manual_seed(seed)
-    overall_start = time.time()
 
-    # Step 1: Broadcast command + metadata to workers (streaming mode)
+    # Broadcast command + metadata to workers (streaming mode)
     cmd = CMD_STREAM.to(NEURON_DEVICE)
     dist.broadcast(cmd, src=0)
     meta = torch.tensor([num_frames, seed, 0], dtype=torch.long, device=NEURON_DEVICE)
     dist.broadcast(meta, src=0)
 
-    # Step 2: Tokenize and broadcast
+    # Tokenize and broadcast
     ids, mask = state.tokenizer([prompt], return_mask=True, add_special_tokens=True)
     ids_device = ids.to(torch.long).to(NEURON_DEVICE)
     mask_device = mask.to(torch.long).to(NEURON_DEVICE)
     dist.broadcast(ids_device, src=0)
     dist.broadcast(mask_device, src=0)
 
-    # Step 3: Receive T5 embeddings
+    # Receive T5 embeddings
     t5_start = time.time()
     prompt_embeds = torch.zeros(1, 512, 4096, dtype=torch.bfloat16, device=NEURON_DEVICE)
     dist.broadcast(prompt_embeds, src=T5_RANK)
     t5_time = time.time() - t5_start
 
-    # Step 4: Prepare noise
+    # Prepare noise
     noise = torch.randn(
         1, num_frames, 16, state.latent_h, state.latent_w,
         dtype=torch.bfloat16
     ).to(NEURON_DEVICE)
     conditional_dict = {"prompt_embeds": prompt_embeds}
 
-    # Step 5: Streaming inference with per-block timing
-    # DiT time = time between yields (generator blocks while computing DiT)
-    # VAE time = time to decode the yielded latent block
+    # Streaming inference with per-block timing
     per_block = []
-    all_frame_arrays = []  # collect all frames for video save
+    all_frame_arrays = []
     total_pixel_frames = 0
     block_idx = 0
-    ttff = None
-    last_yield_time = time.time()  # start of first DiT computation
+    gen_start = time.time()
+    last_yield_time = time.time()
 
     for start_frame, latent_block in state.dit_pipeline.inference_rolling_forcing_streaming(
         noise, conditional_dict
     ):
-        dit_time = time.time() - last_yield_time  # time spent in DiT (inside generator)
+        dit_time = time.time() - last_yield_time
 
         # VAE decode
         vae_start = time.time()
@@ -742,10 +721,7 @@ def run_benchmark(state: PipelineState):
         block_e2e = dit_time + vae_time
         n_frames = len(frames_np)
         total_pixel_frames += n_frames
-        all_frame_arrays.extend(frames_np)  # save for video output
-
-        if ttff is None:
-            ttff = time.time() - overall_start
+        all_frame_arrays.extend(frames_np)
 
         per_block.append({
             "block": block_idx,
@@ -753,92 +729,187 @@ def run_benchmark(state: PipelineState):
             "vae_ms": vae_time * 1000,
             "block_total_ms": block_e2e * 1000,
             "n_frames": n_frames,
-            "wall_s": time.time() - overall_start,
+            "wall_s": time.time() - gen_start,
         })
         block_idx += 1
-        last_yield_time = time.time()  # start of next DiT computation
+        last_yield_time = time.time()
 
-    total_time = time.time() - overall_start
-    overall_fps = total_pixel_frames / total_time if total_time > 0 else 0
+    gen_time = time.time() - gen_start
+    return per_block, all_frame_arrays, t5_time, gen_time, total_pixel_frames
 
-    # Steady-state: exclude first block (compilation) 
-    if len(per_block) > 1:
-        steady_blocks = per_block[1:]
-        steady_time = sum(b["block_total_ms"] for b in steady_blocks) / 1000
-        steady_frames = sum(b["n_frames"] for b in steady_blocks)
-        steady_state_fps = steady_frames / steady_time if steady_time > 0 else 0
+
+def run_benchmark(state: PipelineState):
+    """Rank 0: warmup (compile), then run 3x with measurement prompt, report FPS."""
+    import json
+    from datetime import datetime
+
+    num_frames = DEFAULT_NUM_FRAMES
+    fps = DEFAULT_FPS
+    num_benchmark_runs = int(os.environ.get("BENCHMARK_RUNS", "3"))
+
+    warmup_prompt = "A cat walking on the beach at sunset, cinematic lighting, 4k"
+    benchmark_prompt = (
+        "A dynamic action shot in the style of a professional skateboard magazine, "
+        "featuring a young male longboarder accelerating downhill. He is fully focused, "
+        "his expression intense and determined, carving through tight turns with precision. "
+        "His longboard glides smoothly over the pavement, creating a blur of motion. "
+        "He wears a black longboard shirt, blue jeans, and white sneakers, with a backpack "
+        "slung over one shoulder. His hair flows behind him as he moves, and he grips the "
+        "board tightly with both hands. The background shows a scenic urban street with "
+        "blurred buildings and trees, hinting at a lively cityscape. The photo captures "
+        "the moment just after he exits a turn, with a slight bounce in the board and a "
+        "sense of speed and agility. A medium shot with a slightly elevated camera angle."
+    )
+
+    # Create timestamped run directory
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = os.environ.get("OUTPUT_DIR", f"/tmp/rf_run_{timestamp}")
+    frames_dir = os.path.join(run_dir, "frames")
+    os.makedirs(frames_dir, exist_ok=True)
+    logger.info(f"Run output directory: {run_dir}")
+
+    logger.info("=" * 60)
+    logger.info("  ROLLING FORCING BENCHMARK")
+    logger.info(f"  Model: Wan2.1-T2V-1.3B | TP={TP_DEGREE} | Device: Trainium2")
+    logger.info(f"  Frames: {num_frames} | Benchmark runs: {num_benchmark_runs}")
+    logger.info("=" * 60)
+
+    # ── Phase 1: WARMUP (compilation) ─────────────────────────────────────────
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("  PHASE 1: WARMUP (triggers compilation)")
+    logger.info(f"  Prompt: {warmup_prompt[:60]}...")
+    logger.info("=" * 60)
+
+    warmup_start = time.time()
+    warmup_blocks, _, _, warmup_gen_time, warmup_frames = _run_single_generation(
+        state, warmup_prompt, num_frames, seed=42
+    )
+    compilation_time = time.time() - warmup_start
+    logger.info(f"  Warmup complete: {compilation_time:.1f}s ({warmup_frames} frames)")
+    logger.info(f"  Block 0 (compilation): {warmup_blocks[0]['block_total_ms']/1000:.1f}s")
+    if len(warmup_blocks) > 1:
+        warmup_steady = sum(b['block_total_ms'] for b in warmup_blocks[1:]) / (len(warmup_blocks)-1) / 1000
+        logger.info(f"  Blocks 1-{len(warmup_blocks)-1} avg: {warmup_steady:.3f}s/block")
+
+    # ── Phase 2: BENCHMARK (post-compilation measurement) ─────────────────────
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("  PHASE 2: BENCHMARK (post-compilation, no compile overhead)")
+    logger.info(f"  Prompt: {benchmark_prompt[:60]}...")
+    logger.info(f"  Runs: {num_benchmark_runs}")
+    logger.info("=" * 60)
+
+    all_runs = []
+    all_frame_arrays = []  # frames from last run for video output
+
+    for run_idx in range(num_benchmark_runs):
+        run_seed = 100 + run_idx
+        logger.info(f"  Run {run_idx+1}/{num_benchmark_runs} (seed={run_seed})...")
+
+        per_block, frame_arrays, t5_time, gen_time, pixel_frames = _run_single_generation(
+            state, benchmark_prompt, num_frames, seed=run_seed
+        )
+
+        run_fps = pixel_frames / gen_time if gen_time > 0 else 0
+        avg_block_ms = sum(b['block_total_ms'] for b in per_block) / len(per_block)
+        avg_dit_ms = sum(b['dit_ms'] for b in per_block) / len(per_block)
+        avg_vae_ms = sum(b['vae_ms'] for b in per_block) / len(per_block)
+
+        logger.info(f"    → {pixel_frames} frames in {gen_time:.2f}s = {run_fps:.2f} FPS")
+        logger.info(f"    → Avg block: {avg_block_ms:.0f}ms (DiT:{avg_dit_ms:.0f}ms + VAE:{avg_vae_ms:.0f}ms)")
+
+        all_runs.append({
+            "run": run_idx,
+            "seed": run_seed,
+            "num_frames": pixel_frames,
+            "gen_time_s": gen_time,
+            "fps": run_fps,
+            "t5_time_s": t5_time,
+            "per_block": per_block,
+        })
+
+        # Keep frames from last run for video output
+        if run_idx == num_benchmark_runs - 1:
+            all_frame_arrays = frame_arrays
+
+    # ── Aggregate results across all benchmark runs ───────────────────────────
+    total_benchmark_frames = sum(r["num_frames"] for r in all_runs)
+    total_benchmark_time = sum(r["gen_time_s"] for r in all_runs)
+    overall_fps = total_benchmark_frames / total_benchmark_time if total_benchmark_time > 0 else 0
+
+    all_blocks = [b for r in all_runs for b in r["per_block"]]
+    num_frame_per_block = getattr(state.config, "num_frame_per_block", 3)
+    avg_dit_per_block = sum(b["dit_ms"] for b in all_blocks) / len(all_blocks) / 1000
+    avg_vae_per_block = sum(b["vae_ms"] for b in all_blocks) / len(all_blocks) / 1000
+    avg_e2e_per_block = sum(b["block_total_ms"] for b in all_blocks) / len(all_blocks) / 1000
+    stream_fps = num_frame_per_block / avg_e2e_per_block if avg_e2e_per_block > 0 else 0
+    vae_fps = num_frame_per_block / avg_vae_per_block if avg_vae_per_block > 0 else 0
+    realtime_ratio = stream_fps / fps if fps > 0 else 0
+
+    per_run_fps = [r["fps"] for r in all_runs]
+    avg_run_fps = sum(per_run_fps) / len(per_run_fps)
+    min_run_fps = min(per_run_fps)
+    max_run_fps = max(per_run_fps)
+
+    # Print results
+    print()
+    print("┌─────────────────────────────────────────────────────────────┐")
+    print("│  BENCHMARK RESULTS (post-compilation streaming)              │")
+    print("├─────────────────────────────────────────────────────────────┤")
+    print(f"│  Compilation warmup:    {compilation_time:>8.1f}s (cat prompt, excluded) │")
+    print(f"│  Benchmark runs:        {num_benchmark_runs:>8}                        │")
+    print(f"│  Total frames measured: {total_benchmark_frames:>8}                        │")
+    print(f"│  Total benchmark time:  {total_benchmark_time:>8.2f}s                      │")
+    print("├─────────────────────────────────────────────────────────────┤")
+    print(f"│  DiT/block avg:         {avg_dit_per_block:>8.3f}s (5 steps)         │")
+    print(f"│  VAE/block avg:         {avg_vae_per_block:>8.3f}s ({num_frame_per_block} frames)    │")
+    print(f"│  E2E/block avg:         {avg_e2e_per_block:>8.3f}s (DiT+VAE)         │")
+    print("├─────────────────────────────────────────────────────────────┤")
+    print(f"│  STREAMING FPS:         {stream_fps:>8.2f} frames/sec           │")
+    print(f"│  VAE decode FPS:        {vae_fps:>8.2f} frames/sec           │")
+    print(f"│  Real-time ratio:       {realtime_ratio:>8.3f}x (vs {fps}fps)        │")
+    print("├─────────────────────────────────────────────────────────────┤")
+    print(f"│  Per-run FPS:  avg={avg_run_fps:.2f}  min={min_run_fps:.2f}  max={max_run_fps:.2f}  │")
+    for i, r in enumerate(all_runs):
+        print(f"│    Run {i+1}: {r['fps']:.2f} fps ({r['num_frames']} frames / {r['gen_time_s']:.1f}s)      │")
+    print("└─────────────────────────────────────────────────────────────┘")
+    print()
+
+    if stream_fps >= fps:
+        print(f"  ✅ Streaming FPS ({stream_fps:.1f}) >= playback FPS ({fps}) — REAL-TIME CAPABLE!")
     else:
-        steady_state_fps = overall_fps
+        speedup_needed = fps / stream_fps if stream_fps > 0 else float('inf')
+        print(f"  ⚠️  Need {speedup_needed:.1f}x speedup to reach real-time ({fps}fps playback)")
 
-    realtime_ratio = overall_fps / fps if fps > 0 else 0
-    steady_realtime_ratio = steady_state_fps / fps if fps > 0 else 0
-
+    # Build results JSON
     results = {
-        "num_pixel_frames": total_pixel_frames,
-        "num_latent_frames": num_frames,
-        "num_blocks": block_idx,
-        "total_time_s": total_time,
-        "t5_encode_time_s": t5_time,
-        "ttff_s": ttff or 0,
-        "overall_fps": overall_fps,
-        "steady_state_fps": steady_state_fps,
+        "benchmark_type": "post_compilation_streaming",
+        "compilation_time_s": compilation_time,
+        "num_benchmark_runs": num_benchmark_runs,
+        "num_pixel_frames_total": total_benchmark_frames,
+        "total_benchmark_time_s": total_benchmark_time,
+        "stream_fps": stream_fps,
+        "vae_fps": vae_fps,
+        "avg_dit_per_block_s": avg_dit_per_block,
+        "avg_vae_per_block_s": avg_vae_per_block,
+        "avg_e2e_per_block_s": avg_e2e_per_block,
         "realtime_ratio": realtime_ratio,
-        "steady_realtime_ratio": steady_realtime_ratio,
+        "per_run_fps": per_run_fps,
+        "avg_run_fps": avg_run_fps,
         "playback_fps": fps,
         "config": {
             "tp_degree": TP_DEGREE,
-            "num_frame_per_block": getattr(state.dit_pipeline, 'num_frame_per_block', 0),
+            "num_frame_per_block": num_frame_per_block,
             "denoising_steps": getattr(state.dit_pipeline, 'denoising_steps', 5),
             "latent_spatial": f"{state.latent_h}x{state.latent_w}",
+            "warmup_prompt": warmup_prompt,
+            "benchmark_prompt": benchmark_prompt[:80] + "...",
         },
-        "per_block": per_block,
+        "runs": all_runs,
     }
 
-    # Compute per-component averages (same format as StreamDiffusionV2)
-    num_frame_per_block = getattr(state.config, "num_frame_per_block", 3)
-    compilation_time = per_block[0]["block_total_ms"] / 1000 if per_block else 0
-    avg_dit_per_block = (sum(b["dit_ms"] for b in per_block[1:])
-                         / max(len(per_block) - 1, 1) / 1000)
-    avg_vae_per_block = (sum(b["vae_ms"] for b in per_block[1:])
-                         / max(len(per_block) - 1, 1) / 1000)
-    avg_e2e_per_block = (sum(b["block_total_ms"] for b in per_block[1:])
-                         / max(len(per_block) - 1, 1) / 1000)
-    # Streaming FPS = frames_per_block / e2e_per_block
-    stream_fps = num_frame_per_block / avg_e2e_per_block if avg_e2e_per_block > 0 else 0
-    vae_fps = num_frame_per_block / avg_vae_per_block if avg_vae_per_block > 0 else 0
-
-    # Print results (unified format matching StreamDiffusionV2)
-    print()
-    print("┌─────────────────────────────────────────────────────────┐")
-    print("│  BENCHMARK RESULTS (post-compilation, streaming)         │")
-    print("├─────────────────────────────────────────────────────────┤")
-    print(f"│  Num frames:              {total_pixel_frames:>6}                      │")
-    print(f"│  Benchmark runs:          {1:>6}                      │")
-    print(f"│  Compilation time:     {compilation_time:>8.1f}s (warmup run 1)     │")
-    print(f"│  T5+anchor time:       {t5_time:>8.3f}s                    │")
-    print(f"│  DiT/block time:       {avg_dit_per_block:>8.3f}s (5 steps)       │")
-    print(f"│  VAE/batch time:       {avg_vae_per_block:>8.3f}s ({num_frame_per_block} frames)  │")
-    print(f"│  Batch E2E time:       {avg_e2e_per_block:>8.3f}s ({num_frame_per_block}×DiT+VAE) │")
-    print(f"│  Total time:           {total_time:>8.3f}s                    │")
-    print(f"│  Time-to-first-frame:  {(ttff or 0):>8.3f}s                    │")
-    print("├─────────────────────────────────────────────────────────┤")
-    print(f"│  OVERALL FPS:            {overall_fps:>8.2f} frames/sec         │")
-    print(f"│  STREAMING FPS:          {stream_fps:>8.2f} frames/sec         │")
-    print(f"│  VAE decode FPS:         {vae_fps:>8.2f} frames/sec         │")
-    print(f"│  Real-time ratio:        {realtime_ratio:>8.3f}x (vs {fps}fps)      │")
-    print(f"│  Stream real-time ratio: {stream_fps/fps:>8.3f}x (vs {fps}fps)      │")
-    print("└─────────────────────────────────────────────────────────┘")
-    print()
-
-    if steady_state_fps >= fps:
-        print(f"  ✅ Steady-state FPS ({steady_state_fps:.1f}) >= playback FPS ({fps}) — REAL-TIME CAPABLE!")
-    else:
-        speedup_needed = fps / steady_state_fps if steady_state_fps > 0 else float('inf')
-        print(f"  ⚠️  Need {speedup_needed:.1f}x speedup to reach real-time ({fps}fps playback)")
-
-    # Save individual PNG frames to run directory.
-    # We avoid imageio/ffmpeg inside torchrun (fork_exec conflicts).
-    # The job YAML will stitch frames into mp4 after torchrun exits.
+    # Save frames from last benchmark run
     try:
         logger.info(f"Saving {len(all_frame_arrays)} frames as PNGs to {frames_dir}/ ...")
         for i, frame in enumerate(all_frame_arrays):
