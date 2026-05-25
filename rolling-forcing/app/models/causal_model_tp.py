@@ -333,6 +333,19 @@ class CausalWanModelTP(ModelMixin, ConfigMixin):
         assert context.size(1) == self.text_len
         context = self.text_embedding(context.contiguous())
 
+        # Pre-compute cross-attention K/V for all layers (outside compiled blocks)
+        # This avoids a graph-breaking `if not is_init` branch inside each block.
+        for block_index, block in enumerate(self.blocks):
+            cache = crossattn_cache[block_index]
+            if not cache["is_init"]:
+                b_ctx = context.size(0)
+                n_heads = block.cross_attn.num_heads
+                d_head = block.cross_attn.head_dim
+                cache["k"] = block.cross_attn.norm_k(
+                    block.cross_attn.k(context)).view(b_ctx, -1, n_heads, d_head)
+                cache["v"] = block.cross_attn.v(context).view(b_ctx, -1, n_heads, d_head)
+                cache["is_init"] = True
+
         # Transformer blocks (TP-sharded)
         kwargs = dict(
             e=e0,

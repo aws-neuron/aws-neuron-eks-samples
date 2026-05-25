@@ -504,83 +504,29 @@ class WanT2VCrossAttention(nn.Module):
         self.softmax_scale = 1.0 / math.sqrt(self.head_dim)
 
     def _call_cross_attn_nki(self, q_nki, k_nki, v_nki):
-        """Call cross-attention NKI kernel or PyTorch fallback."""
-        if wan_cross_attn is not None:
-            return wan_cross_attn(q_nki, k_nki, v_nki, self.identity, softmax_scale=self.softmax_scale)
-        else:
-            # PyTorch fallback: standard scaled dot-product attention
-            # q_nki: [N, D, seq_q], k_nki: [N, D, seq_k], v_nki: [N, seq_k, D]
-            scores = torch.matmul(q_nki.transpose(1, 2), k_nki) * self.softmax_scale
-            attn = torch.softmax(scores.float(), dim=-1).to(q_nki.dtype)
-            out = torch.matmul(attn, v_nki)
-            # Return shape: [seq_q, N, D] to match NKI kernel output
-            return out.permute(1, 0, 2).contiguous()
+        return wan_cross_attn(q_nki, k_nki, v_nki, self.identity, softmax_scale=self.softmax_scale)
 
     def forward(self, x, context, context_lens, crossattn_cache=None):
-        r"""
-        Args:
-            x(Tensor): Shape [B, L1, C]
-            context(Tensor): Shape [B, L2, C]
-            context_lens(Tensor): Shape [B]
-            crossattn_cache (List[dict], *optional*): Contains the cached key and value tensors for context embedding.
-        """
-        _profiling = os.environ.get("PROFILE_PIPELINE", "0") == "1" and int(os.environ.get("NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS", "0")) == 0 and self.layer_idx == 0
-        input_dtype = x.dtype
         b, n, d = x.size(0), self.num_heads, self.head_dim
 
-        # compute query, key, value
-        if _profiling:
-            _tc1 = time.perf_counter()
         q = self.norm_q(self.q(x)).view(b, -1, n, d)
-        if _profiling:
-            _t_q = (time.perf_counter() - _tc1) * 1000
 
-        assert crossattn_cache is not None
+        k = crossattn_cache["k"]
+        v = crossattn_cache["v"]
 
-        if _profiling:
-            _tc2 = time.perf_counter()
-        if not crossattn_cache["is_init"]:
-            crossattn_cache["is_init"] = True
-            k = self.norm_k(self.k(context)).view(b, -1, n, d)
-            v = self.v(context).view(b, -1, n, d)
-            crossattn_cache["k"] = k
-            crossattn_cache["v"] = v
-        else:
-            k = crossattn_cache["k"]
-            v = crossattn_cache["v"]
-        if _profiling:
-            _t_kv = (time.perf_counter() - _tc2) * 1000
-
-        # context_lens is unused — all K tokens are valid (same as GPU baseline)
-        # Reshape for wan_cross_attn kernel:
-        # kernel expects q (bs, d, seq_q), k (bs, d, seq_k), v (bs, seq_k, d)
-        # where bs = num_heads (B=1, heads become kernel batch dimension)
-        # Always use NKI path (no device check — avoids graph breaks in torch.compile)
-        if _profiling:
-            _tc3 = time.perf_counter()
         q_nki = q[0].permute(1, 2, 0).contiguous()   # [num_heads, head_dim, L1]
         k_nki = k[0].permute(1, 2, 0).contiguous()   # [num_heads, head_dim, L2]
         v_nki = v[0].permute(1, 0, 2).contiguous()   # [num_heads, L2, head_dim]
-        # Pad seqlen_q to multiple of 128 (NKI tile size)
+
         seqlen_q = q_nki.shape[2]
         P = 128
         pad = (P - seqlen_q % P) % P
-        if pad > 0:
-            q_nki = torch.nn.functional.pad(q_nki, (0, pad))
-        if _profiling:
-            _t_reshape = (time.perf_counter() - _tc3) * 1000
-            _tc4 = time.perf_counter()
+        q_nki = torch.nn.functional.pad(q_nki, (0, pad))
+
         x_nki = self._call_cross_attn_nki(q_nki, k_nki, v_nki)
-        if _profiling:
-            _t_kernel = (time.perf_counter() - _tc4) * 1000
-        # kernel output: [seqlen_q_padded, num_heads, head_dim] → slice to [L1, num_heads, head_dim]
+
         x = x_nki[:seqlen_q].unsqueeze(0).flatten(2)
-        if _profiling:
-            _tc6 = time.perf_counter()
         x = self.o(x)
-        if _profiling:
-            _t_output = (time.perf_counter() - _tc6) * 1000
-            print(f"          [cross_attn] q={_t_q:.1f}ms  kv={_t_kv:.1f}ms  reshape={_t_reshape:.1f}ms  kernel={_t_kernel:.1f}ms  output={_t_output:.1f}ms")
         return x
 
 
@@ -642,40 +588,11 @@ class CausalWanSelfAttention(nn.Module):
         self._self_attn_kernel = wan_flash_self_attn_nki
 
     def _call_self_attn_nki(self, q, k, v, identity, mask, softmax_scale, num_sections):
-        """Call self-attention NKI kernel or PyTorch fallback."""
-        if self._self_attn_kernel is not None:
-            return self._self_attn_kernel(q, k, v, identity, mask,
-                                          softmax_scale=softmax_scale,
-                                          num_sections=num_sections)
-        else:
-            # PyTorch fallback: standard scaled dot-product attention
-            # q: [N, D, seq_q], k: [N, D, seq_k], v: [N, seq_k, D]
-            N, D, seq_q = q.shape
-            seq_k = k.shape[2]
-            # QK^T: [N, seq_q, seq_k]
-            scores = torch.matmul(q.transpose(1, 2), k) * softmax_scale
-            # Apply mask: mask is (128, seq_k) with 0=valid, -inf=invalid
-            # All rows are identical — take row 0 and broadcast as [1, 1, seq_k]
-            scores = scores + mask[0:1].unsqueeze(0)
-            attn = torch.softmax(scores.float(), dim=-1).to(q.dtype)
-            # attn @ v: [N, seq_q, D]
-            out = torch.matmul(attn, v)
-            # Return shape: [seq_q, N, D] to match NKI kernel output
-            return out.permute(1, 0, 2).contiguous()
+        return self._self_attn_kernel(q, k, v, identity, mask,
+                                      softmax_scale=softmax_scale,
+                                      num_sections=num_sections)
 
     def cache_copy_inplace(self, k_dst, k_src, v_dst=None, v_src=None):
-        """Cache copy via tensor.copy_() — already uses optimal DMA on Neuron.
-        NKI kv_cache_copy cannot work in standard neuronxcc.nki (immutable params)."""
-        if k_src.shape != k_dst.shape or k_src.numel() == 0:
-            raise AssertionError(
-                f"[cache_copy_inplace] shape mismatch: k_dst={k_dst.shape}, k_src={k_src.shape}, "
-                f"k_dst.numel()={k_dst.numel()}, k_src.numel()={k_src.numel()}, layer_idx={self.layer_idx}"
-            )
-        if v_dst is not None and (v_src.shape != v_dst.shape or v_src.numel() == 0):
-            raise AssertionError(
-                f"[cache_copy_inplace] shape mismatch: v_dst={v_dst.shape}, v_src={v_src.shape}, "
-                f"v_dst.numel()={v_dst.numel()}, v_src.numel()={v_src.numel()}, layer_idx={self.layer_idx}"
-            )
         k_dst.copy_(k_src)
         if v_dst is not None:
             v_dst.copy_(v_src)
@@ -737,28 +654,11 @@ class CausalWanSelfAttention(nn.Module):
         # ── Pad seq_len to multiple of 128 (NKI tile size) ──────────────
         P = 128
         pad = (P - seq_len % P) % P
-        if pad > 0:
-            cos_sin = torch.nn.functional.pad(cos_sin, (0, 0, 0, pad))
-            x_nki = torch.nn.functional.pad(x[0, :seq_len], (0, 0, 0, 0, 0, pad))
-        else:
-            x_nki = x[0, :seq_len]
+        cos_sin = torch.nn.functional.pad(cos_sin, (0, 0, 0, pad))
+        x_nki = torch.nn.functional.pad(x[0, :seq_len], (0, 0, 0, 0, 0, pad))
 
-        # ── Call NKI rotation kernel or PyTorch fallback ──────────────────
-        if self._rope_kernel is not None:
-            out = self._rope_kernel(x_nki, cos_sin, num_heads=n, head_dim=d)
-            # Slice back to original seq_len, reshape to [1, seq_len, N, D]
-            return out[:seq_len].unsqueeze(0).type_as(x)
-        else:
-            # PyTorch fallback: x * cos + swap(x) * sin
-            # x_nki: [seq_len_padded, N, D], cos_sin: [seq_len_padded, 2*D]
-            # cos_sin[:, :D] = cos_expanded, cos_sin[:, D:] = sin_signed
-            x_rope = x_nki[:seq_len]  # [seq_len, N, D]
-            cos_part = cos_sin[:seq_len, :d].unsqueeze(1)  # [seq_len, 1, D]
-            sin_part = cos_sin[:seq_len, d:].unsqueeze(1)  # [seq_len, 1, D]
-            # swap: x[..., 2j] <-> x[..., 2j+1] (rotate pairs)
-            x_swapped = torch.stack([-x_rope[..., 1::2], x_rope[..., 0::2]], dim=-1).reshape_as(x_rope)
-            out = x_rope * cos_part + x_swapped * sin_part
-            return out.unsqueeze(0).type_as(x)
+        out = self._rope_kernel(x_nki, cos_sin, num_heads=n, head_dim=d)
+        return out[:seq_len].unsqueeze(0).type_as(x)
 
     def forward(
         self,
@@ -786,17 +686,11 @@ class CausalWanSelfAttention(nn.Module):
             num_valid_frames(int, optional): number of non-padding frames
             shared_buffers(tuple): (buffer_k, buffer_v) for scratch space
         """
-        assert kv_cache is not None
-        _profiling = os.environ.get("PROFILE_PIPELINE", "0") == "1" and int(os.environ.get("NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS", "0")) == 0 and self.layer_idx == 0
-        input_dtype = x.dtype
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
-        assert b == 1, f"Batch size must be 1, got {b}"
         if cache_start is None:
             cache_start = current_start
 
         # ── Phase 1: QKV projection + RoPE ──────────────────────────────
-        if _profiling:
-            _t1 = time.perf_counter()
         q = self.norm_q(self.q(x)).view(b, s, n, d)
         k = self.norm_k(self.k(x)).view(b, s, n, d)
         v = self.v(x).view(b, s, n, d)
@@ -809,8 +703,6 @@ class CausalWanSelfAttention(nn.Module):
             q, grid_sizes, freqs_cos, freqs_sin, start_frame=current_start_frame_t)
         roped_key = self._nki_rope_apply(
             k, grid_sizes, freqs_cos, freqs_sin, start_frame=current_start_frame_t)
-        if _profiling:
-            _t_qkv_rope = (time.perf_counter() - _t1) * 1000
 
         num_frames_per_block = self.block_length // self.frame_length
         grid_sizes_one_block = (num_frames_per_block, h, w)
@@ -821,9 +713,6 @@ class CausalWanSelfAttention(nn.Module):
             valid_tokens = f * h * w
 
         # ── Phase 2: Cache management (write + eviction) ────────────────
-        if _profiling:
-            _t2 = time.perf_counter()
-
         cache_end = cache_start + self.block_length
         global_end_index = kv_cache["global_end_index"]
         local_end_index_current = kv_cache["local_end_index"]
@@ -868,11 +757,7 @@ class CausalWanSelfAttention(nn.Module):
             kv_cache["global_end_index"] = cache_end
             kv_cache["local_end_index"] = local_end_index
 
-        if _profiling:
-            _t_cache = (time.perf_counter() - _t2) * 1000
         # ── Phase 3: Assemble KV into buffers ────────────────────────────
-        if _profiling:
-            _t3 = time.perf_counter()
         if updating_cache:
             # Cache-update call: attend over full cache
             cache_len = min(local_end_index, self.max_attention_size)
@@ -928,11 +813,7 @@ class CausalWanSelfAttention(nn.Module):
                 buffer_v[0, offset:offset + valid_tokens], v[0, :valid_tokens])
             k_len_int = offset + valid_tokens
 
-        if _profiling:
-            _t_assemble = (time.perf_counter() - _t3) * 1000
         # ── Phase 4: Single attention call ──────────────────────────────
-        if _profiling:
-            _t4 = time.perf_counter()
         # Reshape to NKI kernel layout: q (N, D, seq_q), k (N, D, seq_k), v (N, seq_k, D)
         # Full static-shape Q (garbage Q beyond valid_tokens is harmless)
         q_kern = roped_query[0].permute(1, 2, 0).contiguous()   # [N, D, seq_q]
@@ -948,8 +829,7 @@ class CausalWanSelfAttention(nn.Module):
         # Pad seq_q to multiple of 128 (NKI tile size)
         P = 128
         pad_q = (P - seqlen_q_orig % P) % P
-        if pad_q > 0:
-            q_kern = torch.nn.functional.pad(q_kern, (0, pad_q))
+        q_kern = torch.nn.functional.pad(q_kern, (0, pad_q))
 
         # Build mask: (128, seqlen_k) bf16, 0 for valid positions, -inf for masked
         mask = torch.zeros((P, seqlen_k), dtype=torch.bfloat16, device=q_kern.device)
@@ -966,15 +846,8 @@ class CausalWanSelfAttention(nn.Module):
         # Output: [seq_q_padded, N, D] bfloat16 → slice to [seq_q, N, D] → [1, seq_q, C]
         x = x[:seqlen_q_orig].unsqueeze(0).flatten(2)
 
-        if _profiling:
-            _t_attention = (time.perf_counter() - _t4) * 1000
         # ── Phase 5: Output projection ──────────────────────────────────
-        if _profiling:
-            _t5 = time.perf_counter()
         x = self.o(x)
-        if _profiling:
-            _t_output = (time.perf_counter() - _t5) * 1000
-            print(f"          [self_attn] qkv_rope={_t_qkv_rope:.1f}ms  cache={_t_cache:.1f}ms  assemble={_t_assemble:.1f}ms  attention={_t_attention:.1f}ms  output={_t_output:.1f}ms")
         return x
 
 
