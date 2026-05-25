@@ -17,7 +17,7 @@ metadata:
   name: rf
   namespace: default
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: rf
@@ -33,7 +33,7 @@ spec:
           resourceClaimTemplateName: s-lnc2-trn2
       containers:
         - name: app
-          image: 421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-d1c940d:latest
+          image: 421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-0461d3b:latest
           imagePullPolicy: IfNotPresent
           command:
             - /bin/bash
@@ -41,15 +41,14 @@ spec:
             - |
               set -euxo pipefail
               
-              # Clone the video-streaming-develop repository (wan1.3b-tp branch)
-              git clone -b wan1.3b-tp https://yahavb:${GITHUB_TOKEN}@github.com/yahavb/video-streaming-develop.git
+              # Clone the aws-neuron-eks-samples repository (rolling-forcing branch)
+              git clone -b rolling-forcing https://yahavb:${GITHUB_TOKEN}@github.com/aws-neuron/aws-neuron-eks-samples.git
               
               export RF_DEVICE_BACKEND=neuron
-              cd video-streaming-develop
+              cd aws-neuron-eks-samples/rolling-forcing/app
               
               # Install dependencies
-              uv pip install omegaconf einops imageio imageio-ffmpeg pillow ftfy regex sentencepiece transformers diffusers accelerate av==13.1.0
-              uv pip install fastapi uvicorn python-multipart
+              uv pip install -r requirements.txt
               uv pip install "setuptools<81"
               uv pip install git+https://github.com/pytorch/vision.git@v0.25.0 --no-deps --no-cache --no-build-isolation
               
@@ -110,8 +109,8 @@ spec:
               fi
               
               # Launch with torchrun for TP=4
-              # All 4 ranks load the DiT sharded across cores (ND0+ND1)
-              # Rank 0 hosts VAE, Rank 2 hosts T5, all run DiT
+              # 4 NeuronCores (s-lnc2-trn2 = 1 LNC = 4 NCs)
+              # All 4 ranks load DiT TP-sharded, Rank 2 hosts T5, Rank 0 hosts VAE
               export REPO_DIR=$(pwd)
               torchrun --nproc_per_node=4 --master_port=29500 \
                 inference_neuron_tp.py 2>&1
@@ -149,8 +148,12 @@ spec:
               value: "--model-type=transformer"
             - name: USE_NKI_KERNELS
               value: "true"
+            - name: USE_NKI_VAE
+              value: "1"
             - name: USE_NEFF_CACHE
               value: "false"
+            - name: WARMUP_FRAMES
+              value: "10"
             - name: VALIDATE_PIPELINE
               value: "1"
             - name: CONFIG_PATH
@@ -169,6 +172,8 @@ spec:
               value: "4"
             - name: T5_RANK
               value: "2"
+            - name: VAE_TP_DEGREE
+              value: "1"
             - name: DEVICE
               value: "neuron"
             - name: HF_TOKEN

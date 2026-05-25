@@ -79,7 +79,7 @@ spec:
               # NEFF Cache: controlled by USE_NEFF_CACHE env var
               # ========================================
               NEFF_LOCAL="/tmp/neff_cache"
-              NEFF_S3="/var/mdl/neff_cache_1.3b_tp8"
+              NEFF_S3="/var/mdl/neff_cache_1.3b"
               mkdir -p "$NEFF_LOCAL"
               
               if [[ "${USE_NEFF_CACHE:-true}" == "true" && -d "$NEFF_S3" && -n "$(ls -A $NEFF_S3 2>/dev/null)" ]]; then
