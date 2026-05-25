@@ -504,8 +504,17 @@ class WanT2VCrossAttention(nn.Module):
         self.softmax_scale = 1.0 / math.sqrt(self.head_dim)
 
     def _call_cross_attn_nki(self, q_nki, k_nki, v_nki):
-        """Call cross-attention NKI kernel (wrap_nki HOP handles torch.compile integration)."""
-        return wan_cross_attn(q_nki, k_nki, v_nki, self.identity, softmax_scale=self.softmax_scale)
+        """Call cross-attention NKI kernel or PyTorch fallback."""
+        if wan_cross_attn is not None:
+            return wan_cross_attn(q_nki, k_nki, v_nki, self.identity, softmax_scale=self.softmax_scale)
+        else:
+            # PyTorch fallback: standard scaled dot-product attention
+            # q_nki: [N, D, seq_q], k_nki: [N, D, seq_k], v_nki: [N, seq_k, D]
+            scores = torch.matmul(q_nki.transpose(1, 2), k_nki) * self.softmax_scale
+            attn = torch.softmax(scores.float(), dim=-1).to(q_nki.dtype)
+            out = torch.matmul(attn, v_nki)
+            # Return shape: [seq_q, N, D] to match NKI kernel output
+            return out.permute(1, 0, 2).contiguous()
 
     def forward(self, x, context, context_lens, crossattn_cache=None):
         r"""
@@ -633,10 +642,26 @@ class CausalWanSelfAttention(nn.Module):
         self._self_attn_kernel = wan_flash_self_attn_nki
 
     def _call_self_attn_nki(self, q, k, v, identity, mask, softmax_scale, num_sections):
-        """Call self-attention NKI kernel (wrap_nki HOP handles torch.compile integration)."""
-        return self._self_attn_kernel(q, k, v, identity, mask,
-                                      softmax_scale=softmax_scale,
-                                      num_sections=num_sections)
+        """Call self-attention NKI kernel or PyTorch fallback."""
+        if self._self_attn_kernel is not None:
+            return self._self_attn_kernel(q, k, v, identity, mask,
+                                          softmax_scale=softmax_scale,
+                                          num_sections=num_sections)
+        else:
+            # PyTorch fallback: standard scaled dot-product attention
+            # q: [N, D, seq_q], k: [N, D, seq_k], v: [N, seq_k, D]
+            N, D, seq_q = q.shape
+            seq_k = k.shape[2]
+            # QK^T: [N, seq_q, seq_k]
+            scores = torch.matmul(q.transpose(1, 2), k) * softmax_scale
+            # Apply mask (broadcast from [128, seq_k] to [N, seq_q, seq_k])
+            # mask has 0 for valid, -inf for invalid
+            scores = scores + mask[:seq_q].unsqueeze(0)
+            attn = torch.softmax(scores.float(), dim=-1).to(q.dtype)
+            # attn @ v: [N, seq_q, D]
+            out = torch.matmul(attn, v)
+            # Return shape: [seq_q, N, D] to match NKI kernel output
+            return out.permute(1, 0, 2).contiguous()
 
     def cache_copy_inplace(self, k_dst, k_src, v_dst=None, v_src=None):
         """Cache copy via tensor.copy_() — already uses optimal DMA on Neuron.
@@ -718,11 +743,22 @@ class CausalWanSelfAttention(nn.Module):
         else:
             x_nki = x[0, :seq_len]
 
-        # ── Call NKI rotation kernel ─────────────────────────────────────
-        out = self._rope_kernel(x_nki, cos_sin, num_heads=n, head_dim=d)
-
-        # Slice back to original seq_len, reshape to [1, seq_len, N, D]
-        return out[:seq_len].unsqueeze(0).type_as(x)
+        # ── Call NKI rotation kernel or PyTorch fallback ──────────────────
+        if self._rope_kernel is not None:
+            out = self._rope_kernel(x_nki, cos_sin, num_heads=n, head_dim=d)
+            # Slice back to original seq_len, reshape to [1, seq_len, N, D]
+            return out[:seq_len].unsqueeze(0).type_as(x)
+        else:
+            # PyTorch fallback: x * cos + swap(x) * sin
+            # x_nki: [seq_len_padded, N, D], cos_sin: [seq_len_padded, 2*D]
+            # cos_sin[:, :D] = cos_expanded, cos_sin[:, D:] = sin_signed
+            x_rope = x_nki[:seq_len]  # [seq_len, N, D]
+            cos_part = cos_sin[:seq_len, :d].unsqueeze(1)  # [seq_len, 1, D]
+            sin_part = cos_sin[:seq_len, d:].unsqueeze(1)  # [seq_len, 1, D]
+            # swap: x[..., 2j] <-> x[..., 2j+1] (rotate pairs)
+            x_swapped = torch.stack([-x_rope[..., 1::2], x_rope[..., 0::2]], dim=-1).reshape_as(x_rope)
+            out = x_rope * cos_part + x_swapped * sin_part
+            return out.unsqueeze(0).type_as(x)
 
     def forward(
         self,
