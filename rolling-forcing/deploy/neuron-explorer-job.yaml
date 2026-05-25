@@ -199,7 +199,7 @@ spec:
             # Leave empty or unset to use the latest run.
             # Example: "20260524_062139"
             - name: PROFILE_RUN
-              value: ""
+              value: "20260525_002815"
       volumes:
         - name: 621547421844-ap-southeast-4-pvc
           persistentVolumeClaim:
