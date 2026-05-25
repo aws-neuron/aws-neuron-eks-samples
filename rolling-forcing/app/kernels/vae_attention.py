@@ -131,13 +131,17 @@ def vae_self_attention(q, k, v, identity, softmax_scale=None):
                     nisa.dma_copy(dst=v_tile[:, nl.ds(dc_start_rem, d_rem)],
                                   src=v[batch_id, nl.ds(v_start, P), nl.ds(dc_start_rem, d_rem)])
 
-                # Extract attn weights: [P, P] from exp_bf16
-                attn_chunk = nl.copy(exp_bf16[:, nl.ds(v_start, P)])
+                # Extract attn weights: [P, P] from exp_bf16 (must be SBUF for nc_matmul)
+                attn_chunk_f32 = nl.ndarray((P, P), dtype=nl.float32, buffer=nl.sbuf)
+                attn_chunk_f32[...] = nl.copy(exp_bf16[:, nl.ds(v_start, P)], dtype=nl.float32)
+                attn_chunk = nl.copy(attn_chunk_f32, dtype=nl.bfloat16)
 
                 # Transpose via identity matmul trick
+                # Must pin attn_T to SBUF explicitly (nc_matmul stationary requires SBUF)
                 attn_T_psum = nl.ndarray((P, P), dtype=nl.float32, buffer=nl.psum)
                 nisa.nc_matmul(attn_T_psum, attn_chunk, id_sbuf)
-                attn_T_f32 = nl.copy(attn_T_psum, dtype=nl.float32)
+                attn_T_f32 = nl.ndarray((P, P), dtype=nl.float32, buffer=nl.sbuf)
+                attn_T_f32[...] = nl.copy(attn_T_psum, dtype=nl.float32)
                 attn_T = nl.copy(attn_T_f32, dtype=nl.bfloat16)
 
                 # nc_matmul: attn_T[P,P].T @ V[P,d]
