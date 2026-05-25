@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: rolling-forcing-neuron-explorer
+  name: neuron-explorer
   namespace: default
 spec:
   backoffLimit: 0
@@ -10,109 +10,104 @@ spec:
       restartPolicy: Never
       containers:
         - name: explorer
-          image: 621547421844.dkr.ecr.us-west-2.amazonaws.com/native-pytorch:eager-sdk2.x.x-ubuntu22.04-torchneuroneager-cp312-74524059227
+          image: 421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-0461d3b:latest
           imagePullPolicy: IfNotPresent
           command:
             - /bin/bash
             - "-c"
             - |
-              set -x
-              
+              set -euxo pipefail
+
               # ═══════════════════════════════════════════════════════════════
-              # Rolling Forcing — Neuron Profile Explorer
-              # Analyzes profile artifacts from rolling-forcing-job
-              # Components profiled: T5 encoder + DiT (TP=4) + VAE decoder
+              # Neuron Explorer — Analyze profile traces from benchmark runs
               #
-              # Usage:
-              #   Default: analyzes the LATEST run
-              #   Set PROFILE_RUN env var to target a specific run:
-              #     e.g. PROFILE_RUN="20260524_062139"
+              # Set PROFILE_RUN to the run timestamp to analyze.
+              # Copies traces from S3 (/var/mdl) to local disk first for speed.
               # ═══════════════════════════════════════════════════════════════
-              
+
               RUNS_BASE="/var/mdl/rolling_forcing/runs"
-              
+              LOCAL_WORK="/tmp/neuron_explorer_work"
+              mkdir -p "$LOCAL_WORK"
+
               echo "============================================"
-              echo "  ROLLING FORCING — NEURON EXPLORER"
-              echo "  Runs base: $RUNS_BASE"
+              echo "  NEURON EXPLORER"
               echo "============================================"
-              echo ""
-              
+
               # ─── Find run directory ─────────────────────────────────────
-              echo "=== Available runs ==="
-              ls -lt "$RUNS_BASE/" 2>/dev/null | head -10
-              
+              echo "=== Available runs on S3 ==="
+              ls -t "$RUNS_BASE/" 2>/dev/null | head -10
+
               if [[ -n "${PROFILE_RUN:-}" ]]; then
-                echo ""
                 echo "Using specified run: PROFILE_RUN=$PROFILE_RUN"
-                LATEST_RUN="$PROFILE_RUN"
+                TARGET_RUN="$PROFILE_RUN"
               else
-                LATEST_RUN=$(ls -t "$RUNS_BASE/" 2>/dev/null | head -1)
-                echo ""
-                echo "No PROFILE_RUN specified — using latest: $LATEST_RUN"
+                TARGET_RUN=$(ls -t "$RUNS_BASE/" 2>/dev/null | head -1)
+                echo "No PROFILE_RUN specified — using latest: $TARGET_RUN"
               fi
-              
-              if [[ -z "$LATEST_RUN" ]]; then
+
+              if [[ -z "$TARGET_RUN" ]]; then
                 echo "ERROR: No runs found in $RUNS_BASE"
+                exit 1
+              fi
+
+              S3_RUN_DIR="$RUNS_BASE/$TARGET_RUN"
+              LOCAL_RUN_DIR="$LOCAL_WORK/$TARGET_RUN"
+              mkdir -p "$LOCAL_RUN_DIR"
+
+              echo "S3 source: $S3_RUN_DIR"
+              echo "Local work dir: $LOCAL_RUN_DIR"
+
+              # ─── Copy profile traces from S3 to local disk ──────────────
+              S3_PROFILES="$S3_RUN_DIR/profiles"
+              if [[ ! -d "$S3_PROFILES" || -z "$(ls -A $S3_PROFILES 2>/dev/null)" ]]; then
+                echo "ERROR: No profiles found in $S3_PROFILES"
                 echo "Run rolling-forcing-job.yaml first!"
                 exit 1
               fi
-              
-              RUN_DIR="$RUNS_BASE/$LATEST_RUN"
-              PROFILE_BASE="$RUN_DIR/profiles"
-              OUTPUT_DIR="$RUN_DIR/profile_json_output"
-              mkdir -p "$OUTPUT_DIR"
-              
-              echo "Using run: $RUN_DIR"
-              echo "Profile dir: $PROFILE_BASE"
-              echo "Output dir: $OUTPUT_DIR"
-              echo ""
-              
-              if [[ ! -d "$PROFILE_BASE" || -z "$(ls -A $PROFILE_BASE 2>/dev/null)" ]]; then
-                echo "ERROR: No profiles found in $PROFILE_BASE"
-                echo "Re-run rolling-forcing-job.yaml with ENABLE_PROFILING=true"
+
+              echo "Copying profile traces from S3 to local disk..."
+              cp -r "$S3_PROFILES" "$LOCAL_RUN_DIR/profiles"
+              echo "Copy complete: $(du -sh $LOCAL_RUN_DIR/profiles | cut -f1)"
+
+              # Find the NTFF directory
+              NTFF_DIR=$(find "$LOCAL_RUN_DIR/profiles" -name "*.ntff" -printf '%h\n' 2>/dev/null | head -1)
+              if [[ -z "$NTFF_DIR" ]]; then
+                NTFF_DIR=$(find "$LOCAL_RUN_DIR/profiles" -mindepth 2 -maxdepth 2 -type d 2>/dev/null | head -1)
+              fi
+              if [[ -z "$NTFF_DIR" ]]; then
+                echo "ERROR: Cannot find NTFF directory in profiles"
+                find "$LOCAL_RUN_DIR/profiles" -type f | head -20
                 exit 1
               fi
-              
-              # Find the actual ntff directory (may be nested under instance_id/session_id)
-              PROFILE_DIR=$(find "$PROFILE_BASE" -name "*.ntff" -printf '%h\n' 2>/dev/null | head -1)
-              if [[ -z "$PROFILE_DIR" ]]; then
-                # Fallback: use the top-level directory
-                PROFILE_DIR="$PROFILE_BASE"
-              fi
-              
+
+              echo "NTFF directory: $NTFF_DIR"
               echo ""
-              echo "Using profile directory: $PROFILE_DIR"
-              echo ""
-              
-              # ─── Summary text output ───────────────────────────────────────
-              echo "=== Running neuron-explorer view (summary-text, skip DMA) ==="
-              neuron-explorer view -d "$PROFILE_DIR" \
+
+              # ─── Neuron Explorer: view ──────────────────────────────────
+              OUTPUT_DIR="$LOCAL_RUN_DIR/output"
+              mkdir -p "$OUTPUT_DIR"
+
+              echo "=== neuron-explorer view (summary-text) ==="
+              neuron-explorer view -d "$NTFF_DIR" \
                 --output-format summary-text \
-                --ignore-dma-trace 2>&1 | tee "$OUTPUT_DIR/rolling_forcing_summary.txt"
-              
+                --ignore-dma-trace 2>&1 | tee "$OUTPUT_DIR/summary.txt" || true
+
               echo ""
-              echo "=== Running neuron-explorer view (JSON output, skip DMA) ==="
-              neuron-explorer view -d "$PROFILE_DIR" \
+              echo "=== neuron-explorer view (JSON, skip DMA) ==="
+              neuron-explorer view -d "$NTFF_DIR" \
                 --output-format json \
-                --output-file "$OUTPUT_DIR/rolling_forcing_profile.json" \
-                --ignore-dma-trace 2>&1 | tee "$OUTPUT_DIR/rolling_forcing_json.log"
-              
-              echo ""
-              echo "=== Listing output files ==="
-              find "$OUTPUT_DIR" -type f -ls
-              
-              # ─── NEFF analysis ─────────────────────────────────────────────
+                --output-file "$OUTPUT_DIR/profile.json" \
+                --ignore-dma-trace 2>&1 | tee "$OUTPUT_DIR/view.log" || true
+
+              # ─── NEFF analysis ──────────────────────────────────────────
               echo ""
               echo "============================================"
               echo "  NEFF COUNT AND SIZE DISTRIBUTION"
-              echo "  (Rolling Forcing: T5 + DiT + VAE)"
               echo "============================================"
-              
-              NEFF_COUNT=$(find "$PROFILE_DIR" -name "*.neff" 2>/dev/null | wc -l)
-              echo "Total NEFFs: ${NEFF_COUNT}"
-              echo ""
-              
-              find "$PROFILE_DIR" -name "*.neff" -exec ls -l {} \; 2>/dev/null | awk '{print $5}' | sort -n | awk '
+
+              NEFF_COUNT=$(find "$NTFF_DIR" -name '*.neff' | wc -l)
+              echo "Total NEFFs: $NEFF_COUNT"
+              find "$NTFF_DIR" -name '*.neff' -exec ls -l '{}' ';' | awk '{print $5}' | sort -n | awk '
                 BEGIN { count=0; sum=0 }
                 { sizes[count++]=$1; sum+=$1 }
                 END {
@@ -130,59 +125,36 @@ spec:
                     else if(sizes[i]<1000000) large++
                     else xlarge++
                   }
-                  printf "  <10KB  (tiny ops — kernel launch overhead):  %d\n", small
-                  printf "  10-100KB (small — partially fused):          %d\n", med
-                  printf "  100KB-1MB (medium — well fused):             %d\n", large
-                  printf "  >1MB  (large — fully fused layers/blocks):   %d\n", xlarge
-                  printf "\n"
-                  if (small > count * 0.5) {
-                    printf "⚠️  WARNING: >50%% tiny NEFFs — significant kernel launch overhead!\n"
-                    printf "   Consider fusing more operations (whole-block compilation).\n"
-                  } else if (xlarge > count * 0.3) {
-                    printf "✅ Good fusion: >30%% of NEFFs are large (>1MB).\n"
-                  }
-                }
-              '
-              
-              # ─── Top NEFFs ─────────────────────────────────────────────────
+                  printf "  <10KB  (tiny):   %d\n", small
+                  printf "  10-100KB (small): %d\n", med
+                  printf "  100KB-1MB (med):  %d\n", large
+                  printf "  >1MB  (large):    %d\n", xlarge
+                }'
+
               echo ""
-              echo "=== Top 10 LARGEST NEFFs (main compute kernels) ==="
-              find "$PROFILE_DIR" -name "*.neff" -exec ls -lhS {} \; 2>/dev/null | sort -k5 -h -r | head -10
-              
+              echo "=== Top 15 LARGEST NEFFs ==="
+              find "$NTFF_DIR" -name '*.neff' -exec ls -lhS '{}' ';' | sort -k5 -h -r | head -15
+
               echo ""
-              echo "=== Top 10 SMALLEST NEFFs (fusion candidates) ==="
-              find "$PROFILE_DIR" -name "*.neff" -exec ls -lhS {} \; 2>/dev/null | sort -k5 -h | head -10
-              
-              # ─── Component breakdown (heuristic by path/name) ──────────────
+              echo "=== Top 15 SMALLEST NEFFs ==="
+              find "$NTFF_DIR" -name '*.neff' -exec ls -lhS '{}' ';' | sort -k5 -h | head -15
+
+              # ─── Archive results back to S3 ─────────────────────────────
               echo ""
               echo "============================================"
-              echo "  COMPONENT BREAKDOWN (by NEFF path)"
+              echo "  Saving results to S3"
               echo "============================================"
-              echo ""
-              echo "DiT-related NEFFs (attention, ffn, embedding):"
-              find "$PROFILE_DIR" -name "*.neff" -path "*dit*" -o -name "*.neff" -path "*block*" -o -name "*.neff" -path "*attn*" -o -name "*.neff" -path "*ffn*" 2>/dev/null | wc -l
-              echo ""
-              echo "VAE-related NEFFs:"
-              find "$PROFILE_DIR" -name "*.neff" -path "*vae*" -o -name "*.neff" -path "*decoder*" 2>/dev/null | wc -l
-              echo ""
-              echo "T5-related NEFFs:"
-              find "$PROFILE_DIR" -name "*.neff" -path "*t5*" -o -name "*.neff" -path "*encoder*" 2>/dev/null | wc -l
-              echo ""
-              echo "Other/unclassified NEFFs:"
-              find "$PROFILE_DIR" -name "*.neff" 2>/dev/null | grep -v -E "dit|block|attn|ffn|vae|decoder|t5|encoder" | wc -l
-              
-              # ─── NTFF trace files ──────────────────────────────────────────
+              S3_OUTPUT="$S3_RUN_DIR/neuron_explorer_output"
+              mkdir -p "$S3_OUTPUT"
+              cp "$OUTPUT_DIR/summary.txt" "$S3_OUTPUT/" 2>/dev/null || true
+              cp "$OUTPUT_DIR/profile.json" "$S3_OUTPUT/" 2>/dev/null || true
+              cp "$OUTPUT_DIR/view.log" "$S3_OUTPUT/" 2>/dev/null || true
+              echo "Results saved to $S3_OUTPUT"
+              ls -la "$S3_OUTPUT/"
+
               echo ""
               echo "============================================"
-              echo "  NTFF TRACE FILES"
-              echo "============================================"
-              find "$PROFILE_DIR" -name "*.ntff" -exec ls -lh {} \; 2>/dev/null
-              
-              echo ""
-              echo "============================================"
-              echo "  DONE — Results saved to:"
-              echo "    $OUTPUT_DIR/rolling_forcing_summary.txt"
-              echo "    $OUTPUT_DIR/rolling_forcing_profile.json"
+              echo "  DONE"
               echo "============================================"
           resources:
             requests:
@@ -195,11 +167,8 @@ spec:
             - name: 621547421844-ap-southeast-4-pvc
               mountPath: /var/mdl
           env:
-            # Set PROFILE_RUN to a specific run timestamp to analyze that run.
-            # Leave empty or unset to use the latest run.
-            # Example: "20260524_062139"
             - name: PROFILE_RUN
-              value: "20260525_002815"
+              value: "nki_20260525_050016"
       volumes:
         - name: 621547421844-ap-southeast-4-pvc
           persistentVolumeClaim:
