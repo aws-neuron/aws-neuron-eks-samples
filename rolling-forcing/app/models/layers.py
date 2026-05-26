@@ -671,21 +671,9 @@ class CausalWanSelfAttention(nn.Module):
         cache_start=None,
         updating_cache=False,
         num_valid_frames=None,
-        shared_buffers=None
+        shared_buffers=None,
+        current_start_frame_t=None
     ):
-        r"""
-        Args:
-            x(Tensor): Shape [B, L, num_heads, C / num_heads]
-            grid_sizes(tuple): Python tuple (F, H, W)
-            freqs_cos(Tensor): Rope cos, shape [1024, C / num_heads / 2]
-            freqs_sin(Tensor): Rope sin, shape [1024, C / num_heads / 2]
-            kv_cache(dict): {"k", "v", "global_end_index", "local_end_index"}
-            current_start(int): absolute start position in global sequence
-            cache_start(int, optional): defaults to current_start
-            updating_cache(bool): whether this is a cache update call
-            num_valid_frames(int, optional): number of non-padding frames
-            shared_buffers(tuple): (buffer_k, buffer_v) for scratch space
-        """
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
         if cache_start is None:
             cache_start = current_start
@@ -698,7 +686,6 @@ class CausalWanSelfAttention(nn.Module):
         f, h, w = grid_sizes
         frame_seqlen = h * w
         current_start_frame = current_start // frame_seqlen
-        current_start_frame_t = torch.tensor(current_start_frame, device=x.device)
         roped_query = self._nki_rope_apply(
             q, grid_sizes, freqs_cos, freqs_sin, start_frame=current_start_frame_t)
         roped_key = self._nki_rope_apply(
