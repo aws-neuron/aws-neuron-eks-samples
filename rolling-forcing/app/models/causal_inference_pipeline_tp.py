@@ -252,13 +252,13 @@ class CausalInferencePipelineTP(torch.nn.Module):
             device=noise.device, dtype=torch.float32)
 
         cache_input = torch.zeros(
-            [batch_size, nfpb, num_channels, height, width],
+            [batch_size, max_frames, num_channels, height, width],
             device=noise.device, dtype=noise.dtype)
         cache_timestep = torch.full(
-            [batch_size, nfpb], self.context_noise,
+            [batch_size, max_frames], self.context_noise,
             device=noise.device, dtype=torch.float32)
         cache_sigma = torch.full(
-            [batch_size, nfpb], self.context_sigma,
+            [batch_size, max_frames], self.context_sigma,
             device=noise.device, dtype=torch.float32)
 
         block_sigma_list = []
@@ -351,17 +351,20 @@ class CausalInferencePipelineTP(torch.nn.Module):
                     self._add_noise(block_pred, block_noise, block_sigma) \
                     .unflatten(0, (batch_size, nfpb))
 
-            # Cache-update call
-            cache_input.copy_(denoised_pred[:, :nfpb])
+            # Cache-update call — pad to max_frames for static shape compilation.
+            # Fill with preceding context from noisy_cache so padding is meaningful.
+            cache_start_frame = max(0, current_start_frame - (max_frames - nfpb) // nfpb * nfpb)
+            cache_input.copy_(noisy_cache[:, cache_start_frame:cache_start_frame + max_frames])
+            cache_input[:, -nfpb:].copy_(denoised_pred[:, :nfpb])
             self.generator(
                 noisy_image_or_video=cache_input,
                 conditional_dict=conditional_dict,
                 timestep=cache_timestep,
                 kv_cache=self.kv_cache_clean,
                 crossattn_cache=self.crossattn_cache,
-                current_start=current_start_frame * self.frame_seq_length,
+                current_start=cache_start_frame * self.frame_seq_length,
                 updating_cache=True,
-                num_valid_frames=nfpb,
+                num_valid_frames=max_frames // nfpb * nfpb,
                 shared_buffers=(self.shared_buffer_k, self.shared_buffer_v),
                 sigma=cache_sigma,
             )
@@ -453,13 +456,13 @@ class CausalInferencePipelineTP(torch.nn.Module):
             [batch_size, max_frames], device=noise.device, dtype=torch.float32)
 
         cache_input = torch.zeros(
-            [batch_size, nfpb, num_channels, height, width],
+            [batch_size, max_frames, num_channels, height, width],
             device=noise.device, dtype=noise.dtype)
         cache_timestep = torch.full(
-            [batch_size, nfpb], self.context_noise,
+            [batch_size, max_frames], self.context_noise,
             device=noise.device, dtype=torch.float32)
         cache_sigma = torch.full(
-            [batch_size, nfpb], self.context_sigma,
+            [batch_size, max_frames], self.context_sigma,
             device=noise.device, dtype=torch.float32)
 
         block_sigma_list = []
@@ -556,17 +559,20 @@ class CausalInferencePipelineTP(torch.nn.Module):
                     self._add_noise(block_pred, block_noise, block_sigma) \
                     .unflatten(0, (batch_size, nfpb))
 
-            # Cache-update call
-            cache_input.copy_(denoised_pred[:, :nfpb])
+            # Cache-update call — pad to max_frames for static shape compilation.
+            # Fill with preceding context from noisy_cache so padding is meaningful.
+            cache_start_frame = max(0, current_start_frame - (max_frames - nfpb) // nfpb * nfpb)
+            cache_input.copy_(noisy_cache[:, cache_start_frame:cache_start_frame + max_frames])
+            cache_input[:, -nfpb:].copy_(denoised_pred[:, :nfpb])
             self.generator(
                 noisy_image_or_video=cache_input,
                 conditional_dict=conditional_dict,
                 timestep=cache_timestep,
                 kv_cache=self.kv_cache_clean,
                 crossattn_cache=self.crossattn_cache,
-                current_start=current_start_frame * self.frame_seq_length,
+                current_start=cache_start_frame * self.frame_seq_length,
                 updating_cache=True,
-                num_valid_frames=nfpb,
+                num_valid_frames=max_frames // nfpb * nfpb,
                 shared_buffers=(self.shared_buffer_k, self.shared_buffer_v),
                 sigma=cache_sigma,
             )
