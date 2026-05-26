@@ -38,6 +38,8 @@ from dataclasses import dataclass
 from collections import OrderedDict
 
 import torch
+import torch._dynamo
+torch._dynamo.config.log_graph_breaks = True
 import torch.distributed as dist
 import numpy as np
 from PIL import Image
