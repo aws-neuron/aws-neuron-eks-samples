@@ -366,7 +366,7 @@ class CausalWanModelTP(ModelMixin, ConfigMixin):
                 "current_start": current_start,
                 "cache_start": cache_start,
             })
-            x = block(x, **kwargs)
+            x = block(x.contiguous(), **kwargs)
 
         # Head + unpatchify (replicated)
         x = self.head(x, e.unflatten(dim=0, sizes=t.shape).unsqueeze(2))
