@@ -197,7 +197,10 @@ spec:
               echo "  ARCHIVING to S3: $ARCHIVE_DIR"
               echo "============================================"
               mkdir -p "$ARCHIVE_DIR"
-              # Save video + benchmark + neuron-explorer results
+              # Save frames + video + benchmark + neuron-explorer results
+              if [[ -d "$RUN_DIR/frames" ]]; then
+                cp -r "$RUN_DIR/frames" "$ARCHIVE_DIR/frames" 2>/dev/null || true
+              fi
               cp "$RUN_DIR/benchmark.json" "$ARCHIVE_DIR/" 2>/dev/null || true
               cp "$RUN_DIR/output.mp4" "$ARCHIVE_DIR/" 2>/dev/null || true
               cp "$RUN_DIR/neuron_explorer_summary.txt" "$ARCHIVE_DIR/" 2>/dev/null || true
