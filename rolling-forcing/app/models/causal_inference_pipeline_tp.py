@@ -252,13 +252,13 @@ class CausalInferencePipelineTP(torch.nn.Module):
             device=noise.device, dtype=torch.float32)
 
         cache_input = torch.zeros(
-            [batch_size, nfpb, num_channels, height, width],
+            [batch_size, max_frames, num_channels, height, width],
             device=noise.device, dtype=noise.dtype)
         cache_timestep = torch.full(
-            [batch_size, nfpb], self.context_noise,
+            [batch_size, max_frames], self.context_noise,
             device=noise.device, dtype=torch.float32)
         cache_sigma = torch.full(
-            [batch_size, nfpb], self.context_sigma,
+            [batch_size, max_frames], self.context_sigma,
             device=noise.device, dtype=torch.float32)
 
         block_sigma_list = []
@@ -352,7 +352,7 @@ class CausalInferencePipelineTP(torch.nn.Module):
                     .unflatten(0, (batch_size, nfpb))
 
             # Cache-update call
-            cache_input.copy_(denoised_pred[:, :nfpb])
+            cache_input[:, :nfpb].copy_(denoised_pred[:, :nfpb])
             self.generator(
                 noisy_image_or_video=cache_input,
                 conditional_dict=conditional_dict,
@@ -453,13 +453,13 @@ class CausalInferencePipelineTP(torch.nn.Module):
             [batch_size, max_frames], device=noise.device, dtype=torch.float32)
 
         cache_input = torch.zeros(
-            [batch_size, nfpb, num_channels, height, width],
+            [batch_size, max_frames, num_channels, height, width],
             device=noise.device, dtype=noise.dtype)
         cache_timestep = torch.full(
-            [batch_size, nfpb], self.context_noise,
+            [batch_size, max_frames], self.context_noise,
             device=noise.device, dtype=torch.float32)
         cache_sigma = torch.full(
-            [batch_size, nfpb], self.context_sigma,
+            [batch_size, max_frames], self.context_sigma,
             device=noise.device, dtype=torch.float32)
 
         block_sigma_list = []
@@ -557,7 +557,7 @@ class CausalInferencePipelineTP(torch.nn.Module):
                     .unflatten(0, (batch_size, nfpb))
 
             # Cache-update call
-            cache_input.copy_(denoised_pred[:, :nfpb])
+            cache_input[:, :nfpb].copy_(denoised_pred[:, :nfpb])
             self.generator(
                 noisy_image_or_video=cache_input,
                 conditional_dict=conditional_dict,
