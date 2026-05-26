@@ -37,9 +37,9 @@ from typing import Optional, List
 from dataclasses import dataclass
 from collections import OrderedDict
 
+os.environ.setdefault("TORCH_LOGS", "+graph_breaks")
 import torch
 import torch._dynamo
-torch._dynamo.config.log_graph_breaks = True
 import torch.distributed as dist
 import numpy as np
 from PIL import Image
