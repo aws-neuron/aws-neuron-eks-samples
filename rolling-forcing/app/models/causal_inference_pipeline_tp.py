@@ -303,8 +303,8 @@ class CausalInferencePipelineTP(torch.nn.Module):
             if current_num_frames == rolling_window_length_blocks * nfpb or current_start_frame == 0:
                 padded_input.copy_(noise[:, current_end_frame - nfpb:current_end_frame])
 
-            padded_timestep[:] = self.timestep_patterns[pattern_indices[window_index]][:, -nfpb:]
-            padded_sigma[:] = self.sigma_patterns[pattern_indices[window_index]][:, -nfpb:]
+            padded_timestep[:] = self.timestep_patterns[pattern_indices[window_index]][-nfpb:]
+            padded_sigma[:] = self.sigma_patterns[pattern_indices[window_index]][-nfpb:]
 
             num_valid_frames = nfpb
 
@@ -501,8 +501,8 @@ class CausalInferencePipelineTP(torch.nn.Module):
             if current_num_frames == rolling_window_length_blocks * nfpb or current_start_frame == 0:
                 padded_input.copy_(noise[:, current_end_frame - nfpb:current_end_frame])
 
-            padded_timestep[:] = self.timestep_patterns[pattern_indices[window_index]][:, -nfpb:]
-            padded_sigma[:] = self.sigma_patterns[pattern_indices[window_index]][:, -nfpb:]
+            padded_timestep[:] = self.timestep_patterns[pattern_indices[window_index]][-nfpb:]
+            padded_sigma[:] = self.sigma_patterns[pattern_indices[window_index]][-nfpb:]
 
             num_valid_frames = nfpb
 
