@@ -56,6 +56,7 @@ logging.basicConfig(
 for name in ['torch', 'transformers', 'torch_neuronx', 'torch_neuronx.python_ops',
              'torch_mlir', 'torch_mlir._mlir_libs']:
     logging.getLogger(name).setLevel(logging.ERROR)
+logging.getLogger('torch._dynamo').setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
