@@ -26,8 +26,8 @@ spec:
             - |
               set -euxo pipefail
 
-              git clone -b rf https://yahavb:${GITHUB_TOKEN}@github.com/aws-neuron/aws-neuron-eks-samples.git
-              cd aws-neuron-eks-samples/rf/app
+              git clone -b rolling-forcing https://yahavb:${GITHUB_TOKEN}@github.com/aws-neuron/aws-neuron-eks-samples.git
+              cd aws-neuron-eks-samples/rolling-forcing/app
               export RF_DEVICE_BACKEND=neuron
 
               # Install dependencies
