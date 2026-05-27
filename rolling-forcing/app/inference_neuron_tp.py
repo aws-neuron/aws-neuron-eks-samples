@@ -40,7 +40,7 @@ from collections import OrderedDict
 os.environ.setdefault("TORCH_LOGS", "+recompiles")
 import torch
 import torch._dynamo
-torch._dynamo.config.cache_size_limit = 16
+torch._dynamo.config.cache_size_limit = 12
 import torch.distributed as dist
 import numpy as np
 from PIL import Image
