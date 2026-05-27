@@ -111,15 +111,7 @@ spec:
               if [[ -d "$FRAMES_DIR" && -n "$(ls $FRAMES_DIR/frame_*.png 2>/dev/null | head -1)" ]]; then
                 FRAME_COUNT=$(ls $FRAMES_DIR/frame_*.png | wc -l)
                 echo "Stitching $FRAME_COUNT frames into video: $VIDEO_OUT"
-                python3 -c "
-import imageio, glob, os
-frames = sorted(glob.glob('${FRAMES_DIR}/frame_*.png'))
-writer = imageio.get_writer('${VIDEO_OUT}', fps=16, codec='libx264', quality=8)
-for f in frames:
-    writer.append_data(imageio.imread(f))
-writer.close()
-print(f'Video saved: ${VIDEO_OUT} ({len(frames)} frames)')
-" 2>&1 || echo "WARNING: video stitch failed (frames still available as PNGs)"
+                python3 -c "import imageio,glob,sys; frames=sorted(glob.glob('$FRAMES_DIR/frame_*.png')); w=imageio.get_writer('$VIDEO_OUT',fps=16); [w.append_data(imageio.imread(f)) for f in frames]; w.close(); print(f'Video saved ($VIDEO_OUT), {len(frames)} frames')" 2>&1 || echo "WARNING: video stitch failed (frames still available as PNGs)"
               else
                 echo "No frames found in $FRAMES_DIR — skipping video stitch"
               fi
