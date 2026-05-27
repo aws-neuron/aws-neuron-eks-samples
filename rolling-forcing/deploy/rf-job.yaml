@@ -106,18 +106,20 @@ spec:
               # ========================================
               # Stitch last run's PNGs into mp4
               # ========================================
-              apt-get update -qq && apt-get install -y -qq ffmpeg > /dev/null 2>&1 || true
               FRAMES_DIR="$RUN_DIR/frames"
               VIDEO_OUT="$RUN_DIR/output.mp4"
               if [[ -d "$FRAMES_DIR" && -n "$(ls $FRAMES_DIR/frame_*.png 2>/dev/null | head -1)" ]]; then
                 FRAME_COUNT=$(ls $FRAMES_DIR/frame_*.png | wc -l)
                 echo "Stitching $FRAME_COUNT frames into video: $VIDEO_OUT"
-                ffmpeg -y -framerate 16 -i "$FRAMES_DIR/frame_%04d.png" \
-                  -c:v libx264 -pix_fmt yuv420p -crf 18 "$VIDEO_OUT" 2>&1 || \
-                  echo "WARNING: ffmpeg stitch failed (frames still available as PNGs)"
-                if [[ -f "$VIDEO_OUT" ]]; then
-                  echo "Video saved: $VIDEO_OUT ($(du -sh $VIDEO_OUT | cut -f1))"
-                fi
+                python3 -c "
+import imageio, glob, os
+frames = sorted(glob.glob('${FRAMES_DIR}/frame_*.png'))
+writer = imageio.get_writer('${VIDEO_OUT}', fps=16, codec='libx264', quality=8)
+for f in frames:
+    writer.append_data(imageio.imread(f))
+writer.close()
+print(f'Video saved: ${VIDEO_OUT} ({len(frames)} frames)')
+" 2>&1 || echo "WARNING: video stitch failed (frames still available as PNGs)"
               else
                 echo "No frames found in $FRAMES_DIR — skipping video stitch"
               fi

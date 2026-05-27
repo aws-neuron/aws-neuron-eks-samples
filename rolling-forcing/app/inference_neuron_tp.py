@@ -38,6 +38,8 @@ from dataclasses import dataclass
 from collections import OrderedDict
 
 import torch
+import torch._dynamo
+torch._dynamo.config.cache_size_limit = 12
 import torch.distributed as dist
 import numpy as np
 from PIL import Image
