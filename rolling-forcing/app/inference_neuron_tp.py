@@ -38,7 +38,6 @@ from dataclasses import dataclass
 from collections import OrderedDict
 
 import torch
-import torch._dynamo
 import torch.distributed as dist
 import numpy as np
 from PIL import Image
@@ -55,7 +54,6 @@ logging.basicConfig(
 for name in ['torch', 'transformers', 'torch_neuronx', 'torch_neuronx.python_ops',
              'torch_mlir', 'torch_mlir._mlir_libs']:
     logging.getLogger(name).setLevel(logging.ERROR)
-logging.getLogger('torch._dynamo').setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
