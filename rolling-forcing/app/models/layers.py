@@ -671,8 +671,6 @@ class CausalWanSelfAttention(nn.Module):
         current_start_frame_t=None
     ):
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
-        if cache_start is None:
-            cache_start = current_start
 
         # ── Phase 1: QKV projection + RoPE ──────────────────────────────
         q = self.norm_q(self.q(x)).view(b, s, n, d)
@@ -681,7 +679,6 @@ class CausalWanSelfAttention(nn.Module):
 
         f, h, w = grid_sizes
         frame_seqlen = h * w
-        current_start_frame = current_start // frame_seqlen
         roped_query = self._nki_rope_apply(
             q, grid_sizes, freqs_cos, freqs_sin, start_frame=current_start_frame_t)
         roped_key = self._nki_rope_apply(
@@ -690,12 +687,9 @@ class CausalWanSelfAttention(nn.Module):
         num_frames_per_block = self.block_length // self.frame_length
         grid_sizes_one_block = (num_frames_per_block, h, w)
 
-        if num_valid_frames is not None:
-            valid_tokens = num_valid_frames * frame_seqlen
-        else:
-            valid_tokens = f * h * w
-
         # ── Phase 2: Cache management (write + eviction) ────────────────
+        if cache_start is None:
+            cache_start = current_start
         cache_end = cache_start + self.block_length
         global_end_index = kv_cache["global_end_index"]
         local_end_index_current = kv_cache["local_end_index"]
@@ -765,6 +759,7 @@ class CausalWanSelfAttention(nn.Module):
 
         else:
             # Normal denoising (or first block): anchor + working cache + current
+            valid_tokens = num_valid_frames * frame_seqlen if num_valid_frames is not None else f * h * w
             offset = 0
             if local_start_index > 0:
                 # Anchor block (roped to virtual past position)
@@ -774,6 +769,7 @@ class CausalWanSelfAttention(nn.Module):
                 wc_len = wc_end - wc_start
 
                 wc_frame_length = wc_len // self.frame_length
+                current_start_frame = current_start // frame_seqlen
                 rope_start_frame = current_start_frame - wc_frame_length - num_frames_per_block
                 anchor_roped = self._nki_rope_apply(
                     kv_cache["k"][0, :self.block_length].unsqueeze(0),
