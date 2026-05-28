@@ -647,12 +647,12 @@ class CausalWanSelfAttention(nn.Module):
         # ── Pack into [seq_len, 2*D] float32 for NKI kernel ─────────────
         cos_sin = torch.cat([cos_expanded, sin_signed], dim=-1).contiguous()  # [seq_len, 2D]
 
-        # Pad cos_sin to tile boundary (kernel loads full P-sized tiles)
+        # Pad to tile boundary (kernel requires seq_len % 128 == 0)
         P = 128
         pad = (P - seq_len % P) % P
         cos_sin = torch.nn.functional.pad(cos_sin, (0, 0, 0, pad))
+        x_nki = torch.nn.functional.pad(x[0, :seq_len], (0, 0, 0, 0, 0, pad))
 
-        x_nki = x[0, :seq_len].contiguous()
         out = self._rope_kernel(x_nki, cos_sin, num_heads=n, head_dim=d)
         return out[:seq_len].unsqueeze(0).type_as(x)
 

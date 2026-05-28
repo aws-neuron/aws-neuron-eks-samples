@@ -38,21 +38,14 @@ import nki.isa as nisa
 
 @nki.jit
 def causal_rope_rotation(x, cos_sin, num_heads=12, head_dim=128):
-    """RoPE rotation kernel. Accepts any seq_len (pads to tile boundary internally).
-
-    Args:
-        x:       [seq_len, num_heads, head_dim] bfloat16 — need NOT be multiple of 128
-        cos_sin: [seq_len, 2*head_dim] float32 — same seq_len as x
-    Returns:
-        out:     [seq_len, num_heads, head_dim] bfloat16
-    """
     seq_len = x.shape[0]
     N = num_heads
     D = head_dim
     P = nl.tile_size.pmax
 
-    num_tiles = (seq_len + P - 1) // P
-    out = nl.ndarray((num_tiles * P, N, D), dtype=x.dtype, buffer=nl.shared_hbm)
+    assert seq_len % P == 0
+    num_tiles = seq_len // P
+    out = nl.ndarray((seq_len, N, D), dtype=x.dtype, buffer=nl.shared_hbm)
 
     for tile_i in nl.sequential_range(num_tiles):
         ts = tile_i * P
