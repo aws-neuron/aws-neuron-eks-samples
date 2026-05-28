@@ -735,12 +735,14 @@ class CausalWanSelfAttention(nn.Module):
             kv_cache["local_end_index"] = local_end_index
 
         # ── Phase 3: Assemble KV into buffers ────────────────────────────
+        # Static buffer size — all copies use fixed sizes to avoid dynamic shapes
+        buf_size = buffer_k.shape[1]  # max_attention_size (padded to ATTN_SEQLEN_MULTIPLE)
+
         if updating_cache:
             # Cache-update call: attend over full cache
             cache_len = min(local_end_index, self.max_attention_size)
             cache_start_pos = max(0, local_end_index - self.max_attention_size)
 
-            # Always copy max_attention_size tokens (static length)
             self.cache_copy_inplace(
                 buffer_k[0, :cache_len],
                 kv_cache["k"][0, cache_start_pos:cache_start_pos + cache_len],
@@ -784,12 +786,12 @@ class CausalWanSelfAttention(nn.Module):
                     self.cache_copy_inplace(
                         buffer_k[0, offset:offset + wc_len], kv_cache["k"][0, wc_start:wc_start + wc_len],
                         buffer_v[0, offset:offset + wc_len], kv_cache["v"][0, wc_start:wc_start + wc_len])
-                offset += wc_len  # advance by actual wc_len (dynamic offset)
+                offset += wc_len
 
-            # Current tokens
+            # Current tokens — always copy full block_length (static shape)
             self.cache_copy_inplace(
-                buffer_k[0, offset:offset + valid_tokens], roped_key[0, :valid_tokens],
-                buffer_v[0, offset:offset + valid_tokens], v[0, :valid_tokens])
+                buffer_k[0, offset:offset + self.block_length], roped_key[0, :self.block_length],
+                buffer_v[0, offset:offset + self.block_length], v[0, :self.block_length])
             k_len_int = offset + valid_tokens
 
         # ── Phase 4: Single attention call ──────────────────────────────
