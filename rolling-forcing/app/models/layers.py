@@ -87,11 +87,7 @@ ATTN_SEQLEN_MULTIPLE = 8192
 class GELU(nn.Module):
 
     def forward(self, x):
-        dtype = x.dtype
-        x = x.float()
-        result = 0.5 * x * (1.0 + torch.tanh(
-            math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))))
-        return result.to(dtype)
+        return torch.nn.functional.gelu(x, approximate='tanh')
 
 
 @jit
