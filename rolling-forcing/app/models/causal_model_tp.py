@@ -140,13 +140,9 @@ class CausalWanAttentionBlockTP(nn.Module):
         current_start=0,
         cache_start=None,
         num_valid_frames=None,
-        shared_buffers=None
+        shared_buffers=None,
+        current_start_frame_t=None
     ):
-        """Forward pass — structurally identical to non-TP version.
-
-        All-reduces happen inside RowParallelLinear (self_attn.o, cross_attn.o, ffn[2]).
-        This means 3 all-reduces per block: after self-attn, after cross-attn, after FFN.
-        """
         num_frames = e.shape[1]
         frame_seqlen = x.shape[1] // num_frames
         e0, e1, e2, e3, e4, e5 = self._modulation_chunk(self.modulation, e)
@@ -167,6 +163,7 @@ class CausalWanAttentionBlockTP(nn.Module):
             updating_cache=updating_cache,
             num_valid_frames=num_valid_frames,
             shared_buffers=shared_buffers,
+            current_start_frame_t=current_start_frame_t,
         )
         x = self._modulated_residual(x, y, e2, num_frames, frame_seqlen)
 
@@ -359,12 +356,17 @@ class CausalWanModelTP(ModelMixin, ConfigMixin):
             shared_buffers=shared_buffers,
         )
 
+        frame_seqlen = x.shape[1] // e0.shape[1]
+        current_start_frame_t = torch.tensor(
+            current_start // frame_seqlen, dtype=torch.int64, device=x.device)
+
         for block_index, block in enumerate(self.blocks):
             kwargs.update({
                 "kv_cache": kv_cache[block_index],
                 "crossattn_cache": crossattn_cache[block_index],
                 "current_start": current_start,
                 "cache_start": cache_start,
+                "current_start_frame_t": current_start_frame_t,
             })
             x = block(x, **kwargs)
 
