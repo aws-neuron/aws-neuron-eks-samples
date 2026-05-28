@@ -1,0 +1,127 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rf-nst
+  namespace: default
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: rf-nst-job
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        node-type: trn2
+      resourceClaims:
+        - name: s-lnc2-trn2
+          resourceClaimTemplateName: s-lnc2-trn2
+      containers:
+        - name: inference
+          image: 421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-0461d3b:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - "-exc"
+            - |
+              set -euxo pipefail
+
+              git clone -b neuron-science-port https://yahavb:${GITHUB_TOKEN}@github.com/aws-neuron/aws-neuron-eks-samples.git
+              cd aws-neuron-eks-samples/rolling-forcing/app/science_team
+
+              # Install dependencies
+              uv pip install -r ../requirements.txt
+              uv pip install "setuptools<81"
+              uv pip install git+https://github.com/pytorch/vision.git@v0.25.0 --no-deps --no-cache --no-build-isolation
+
+              # Model weights from S3 cache
+              WAN_1_3B_TAR="/var/mdl/wan_models/Wan2.1-T2V-1.3B.tar"
+              mkdir -p wan_models
+              if [[ -f "$WAN_1_3B_TAR" ]]; then
+                echo "Copying Wan 1.3B tar from S3 cache..."
+                cp "$WAN_1_3B_TAR" /tmp/Wan2.1-T2V-1.3B.tar
+                tar xf /tmp/Wan2.1-T2V-1.3B.tar -C wan_models/
+                rm -f /tmp/Wan2.1-T2V-1.3B.tar
+              else
+                python3 -c "from huggingface_hub import snapshot_download; snapshot_download('Wan-AI/Wan2.1-T2V-1.3B', local_dir='wan_models/Wan2.1-T2V-1.3B', local_dir_use_symlinks=False)"
+                tar cf /tmp/Wan2.1-T2V-1.3B.tar -C wan_models Wan2.1-T2V-1.3B
+                mkdir -p "$(dirname $WAN_1_3B_TAR)"
+                cp /tmp/Wan2.1-T2V-1.3B.tar "$WAN_1_3B_TAR"
+                rm -f /tmp/Wan2.1-T2V-1.3B.tar
+              fi
+
+              # Rolling Forcing checkpoint
+              RF_CACHE="/var/mdl/checkpoints/rolling_forcing_dmd.pt"
+              mkdir -p checkpoints
+              if [[ -f "$RF_CACHE" ]]; then
+                cp "$RF_CACHE" checkpoints/rolling_forcing_dmd.pt
+              else
+                python3 -c "from huggingface_hub import hf_hub_download; hf_hub_download('TencentARC/RollingForcing', 'checkpoints/rolling_forcing_dmd.pt', local_dir='.')"
+                mkdir -p "$(dirname $RF_CACHE)"
+                cp checkpoints/rolling_forcing_dmd.pt "$RF_CACHE"
+              fi
+
+              echo "============================================"
+              echo "  NST E2E PIPELINE: TP=4, SP=1"
+              echo "============================================"
+
+              # Run e2e pipeline (T5 + DiT + VAE)
+              torchrun --nproc_per_node=4 --master_port=29500 \
+                e2e_pipeline.py \
+                --tp_degree 4 \
+                --config_path configs/rolling_forcing_dmd.yaml \
+                --checkpoint_path checkpoints/rolling_forcing_dmd.pt \
+                --prompt_file prompts/example_prompts.txt \
+                --num_output_frames 81 \
+                --output_folder /tmp/nst_output \
+                --use_ema 2>&1
+
+              echo "============================================"
+              echo "  DONE"
+              echo "============================================"
+              ls -la /tmp/nst_output/ 2>/dev/null || true
+          resources:
+            claims:
+              - name: s-lnc2-trn2
+            requests:
+              cpu: 44
+              memory: 440Gi
+            limits:
+              cpu: 44
+              memory: 440Gi
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: 621547421844-ap-southeast-4-pvc
+              mountPath: /var/mdl
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: NEURON_RT_LOG_LEVEL
+              value: "ERROR"
+            - name: NEURON_CC_LOG_LEVEL
+              value: "ERROR"
+            - name: NEURON_LOGICAL_NC_CONFIG
+              value: "2"
+            - name: NEURON_CC_FLAGS
+              value: "--model-type=transformer"
+            - name: NEURON_FALLBACK_ENABLED
+              value: "0"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-token
+                  key: GITHUB_TOKEN
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Gi
+        - name: 621547421844-ap-southeast-4-pvc
+          persistentVolumeClaim:
+            claimName: 621547421844-ap-southeast-4-pvc
