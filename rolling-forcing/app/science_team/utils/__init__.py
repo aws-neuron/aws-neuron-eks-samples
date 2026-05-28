@@ -18,7 +18,7 @@
 import torch
 import torch._dynamo
 
-torch._dynamo.config.cache_size_limit = 128
+# cache_size_limit=8 (default) — higher values crash neuronx-cc
 
 
 def _compile(mod_or_fn):
