@@ -67,16 +67,26 @@ else:
     print("  [3/4] kernels/self_attention.py     — SKIPPED (disabled)")
 
 # --- Kernel 4/4: kv_cache_copy (kernels/kv_cache_copy.py) ---
-# NOT loaded as NKI — uses tensor.copy_() (optimal DMA on Neuron).
-# NKI kv_cache_copy cannot work because input parameters are immutable.
-build_rope_grids = None
-print("  [4/4] kernels/kv_cache_copy.py     — NOT NKI (uses tensor.copy_() DMA)")
+KV_CACHE_NKI_AVAILABLE = False
+_nki_cache_copy = None
+_nki_kv_cache_copy = None
+if USE_NKI_KERNELS:
+    try:
+        from kernels.kv_cache_copy import cache_copy as _nki_cache_copy
+        from kernels.kv_cache_copy import kv_cache_copy as _nki_kv_cache_copy
+        KV_CACHE_NKI_AVAILABLE = True
+        print("  [4/4] kernels/kv_cache_copy.py     ✓ LOADED (nki_op, mutates_args)")
+    except Exception as e:
+        print(f"  [4/4] kernels/kv_cache_copy.py     ✗ FAILED: {e}")
+else:
+    print("  [4/4] kernels/kv_cache_copy.py     — SKIPPED (disabled)")
 
 print("=" * 60)
-print("[layers.py] Summary: cross_attn=%s  rope=%s  self_attn=%s  kv_cache=tensor.copy_()" % (
+print("[layers.py] Summary: cross_attn=%s  rope=%s  self_attn=%s  kv_cache=%s" % (
     "✓" if NKI_AVAILABLE else "✗",
     "✓" if ROPE_NKI_AVAILABLE else "✗",
-    "✓" if SELF_ATTN_NKI_AVAILABLE else "✗"))
+    "✓" if SELF_ATTN_NKI_AVAILABLE else "✗",
+    "✓ NKI" if KV_CACHE_NKI_AVAILABLE else "tensor.copy_()"))
 print("=" * 60)
 
 # NKI self-attention kernel requires seqlen_k to be a multiple of this value
@@ -589,9 +599,14 @@ class CausalWanSelfAttention(nn.Module):
                                       num_sections=num_sections)
 
     def cache_copy_inplace(self, k_dst, k_src, v_dst=None, v_src=None):
-        k_dst.copy_(k_src)
-        if v_dst is not None:
-            v_dst.copy_(v_src)
+        if KV_CACHE_NKI_AVAILABLE and v_dst is not None:
+            _nki_kv_cache_copy(k_dst, k_src, v_dst, v_src)
+        elif KV_CACHE_NKI_AVAILABLE:
+            _nki_cache_copy(k_dst, k_src)
+        else:
+            k_dst.copy_(k_src)
+            if v_dst is not None:
+                v_dst.copy_(v_src)
 
     def _nki_rope_apply(self, x, grid_sizes, freqs_cos, freqs_sin, start_frame):
         """Apply RoPE using the NKI kernel (Neuron) or fall back to traced PyTorch.
