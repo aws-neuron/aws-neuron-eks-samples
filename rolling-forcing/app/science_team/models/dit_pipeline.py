@@ -153,6 +153,10 @@ def build_dit_pipeline(config_path, checkpoint_path, tp_degree, use_ema):
                 remapped[k] = v
         pipe.generator.load_state_dict(remapped, strict=True)
 
+    # Enable torch.compile now that weights are loaded
+    from utils import enable_compile
+    enable_compile()
+
     pipe.generator.model = pipe.generator.model.to("neuron")
     return pipe
 

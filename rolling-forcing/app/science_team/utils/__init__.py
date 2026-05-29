@@ -21,8 +21,18 @@ import torch._dynamo
 # cache_size_limit=8 (default) — higher values crash neuronx-cc
 
 
+_COMPILE_ENABLED = False
+
+
 def _compile(mod_or_fn):
-    return torch.compile(mod_or_fn, backend="neuron", dynamic=False, fullgraph=True)
+    if _COMPILE_ENABLED:
+        return torch.compile(mod_or_fn, backend="neuron", dynamic=False, fullgraph=True)
+    return mod_or_fn
+
+
+def enable_compile():
+    global _COMPILE_ENABLED
+    _COMPILE_ENABLED = True
 
 
 def w_shard(tensor, rank, world):
