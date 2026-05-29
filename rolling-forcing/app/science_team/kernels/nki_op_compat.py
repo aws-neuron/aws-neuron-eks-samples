@@ -5,11 +5,13 @@ Our SDK only has wrap_nki which requires immutable inputs.
 This stub uses wrap_nki and ignores mutation semantics — the caller
 must handle mutation externally (e.g., tensor.copy_() after kernel call).
 """
+import nki
 from torch_neuronx.nki_hop import wrap_nki
 
 
 def nki_op(name, mutates_args=None):
-    """Decorator stub replacing alpha nki_op with wrap_nki."""
+    """Decorator stub replacing alpha nki_op with @nki.jit + wrap_nki."""
     def decorator(fn):
-        return wrap_nki(fn)
+        jitted = nki.jit(fn)
+        return wrap_nki(jitted)
     return decorator
