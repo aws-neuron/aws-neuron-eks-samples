@@ -69,11 +69,12 @@ class CausalWanSelfAttentionSP(nn.Module):
         self.sp_rank = ps.get_rank("attn-sp")
         self.heads_per_shard = num_heads // self.tp_degree
 
-        # Layers (same as base — ColumnParallel Q/K/V after sharding)
+        # Layers — created at full size, shard_model_tp() replaces with
+        # ColumnParallel/RowParallel after weight loading
         self.q = jit(nn.Linear(dim, dim))
         self.k = jit(nn.Linear(dim, dim))
         self.v = jit(nn.Linear(dim, dim))
-        self.o = jit(nn.Linear(dim // self.tp_degree, dim))
+        self.o = jit(nn.Linear(dim, dim))
         self.norm_q = WanRMSNorm(dim, eps=eps)
         self.norm_k = WanRMSNorm(dim, eps=eps)
 
