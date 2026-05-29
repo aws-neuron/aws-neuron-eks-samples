@@ -237,18 +237,15 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
 
     for i, block in enumerate(dit_model.blocks):
         # Compile sub-modules within each block
+        # norm_q/norm_k left in eager — they contain all_reduce (TPRMSNorm)
         block.self_attn.q = _compile(block.self_attn.q)
         block.self_attn.k = _compile(block.self_attn.k)
         block.self_attn.v = _compile(block.self_attn.v)
         block.self_attn.o = _compile(block.self_attn.o)
-        block.self_attn.norm_q = _compile(block.self_attn.norm_q)
-        block.self_attn.norm_k = _compile(block.self_attn.norm_k)
         block.cross_attn.q = _compile(block.cross_attn.q)
         block.cross_attn.k = _compile(block.cross_attn.k)
         block.cross_attn.v = _compile(block.cross_attn.v)
         block.cross_attn.o = _compile(block.cross_attn.o)
-        block.cross_attn.norm_q = _compile(block.cross_attn.norm_q)
-        block.cross_attn.norm_k = _compile(block.cross_attn.norm_k)
         block.ffn = _compile(block.ffn)
 
     if rank == 0:
