@@ -108,6 +108,13 @@ def setup_distributed():
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
+
+    # Initialize SP/TP parallel groups
+    sp_degree = world_size // TP_DEGREE
+    if sp_degree > 1:
+        from models.parallel_state import init_parallel_groups
+        init_parallel_groups(sp_degree, TP_DEGREE)
+
     return rank, world_size
 
 

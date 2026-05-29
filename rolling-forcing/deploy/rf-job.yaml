@@ -14,8 +14,8 @@ spec:
       nodeSelector:
         node-type: trn2
       resourceClaims:
-        - name: s-lnc2-trn2
-          resourceClaimTemplateName: s-lnc2-trn2
+        - name: s-lnc1-trn2
+          resourceClaimTemplateName: s-lnc1-trn2
       containers:
         - name: inference
           image: 421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-0461d3b:latest
@@ -26,7 +26,7 @@ spec:
             - |
               set -euxo pipefail
 
-              git clone -b rolling-forcing https://yahavb:${GITHUB_TOKEN}@github.com/aws-neuron/aws-neuron-eks-samples.git
+              git clone -b sp2 https://yahavb:${GITHUB_TOKEN}@github.com/aws-neuron/aws-neuron-eks-samples.git
               cd aws-neuron-eks-samples/rolling-forcing/app
               export RF_DEVICE_BACKEND=neuron
 
@@ -88,7 +88,7 @@ spec:
 
               # Launch benchmark: warmup (cat) + 3x measurement (skateboard)
               export REPO_DIR=$(pwd)
-              torchrun --nproc_per_node=4 --master_port=29500 \
+              torchrun --nproc_per_node=8 --master_port=29500 \
                 inference_neuron_tp.py --benchmark 2>&1
 
               # ========================================
@@ -229,7 +229,7 @@ spec:
             - name: RF_DEVICE_BACKEND
               value: "neuron"
             - name: NEURON_LOGICAL_NC_CONFIG
-              value: "2"
+              value: "1"
             - name: NEURON_RT_DBG_INTRA_RDH_CHANNEL_BUFFER_SIZE
               value: "134217728"
             - name: NEURON_CC_FLAGS
@@ -239,7 +239,7 @@ spec:
             - name: USE_NEFF_CACHE
               value: "false"
             - name: BENCHMARK_RUNS
-              value: "3"
+              value: "1"
             - name: CONFIG_PATH
               value: "configs/default_config.yaml"
             - name: MODEL_PATH
@@ -249,7 +249,7 @@ spec:
             - name: CHECKPOINT_PATH
               value: "checkpoints/rolling_forcing_dmd.pt"
             - name: DEFAULT_NUM_FRAMES
-              value: "161"
+              value: "21"
             - name: DEFAULT_FPS
               value: "16"
             - name: TP_DEGREE

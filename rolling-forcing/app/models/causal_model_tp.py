@@ -43,6 +43,7 @@ from models.layers import (
     modulated_residual,
 )
 from models.tp_utils import all_reduce_sum, get_tp_rank, get_tp_world_size
+from models import parallel_state as ps
 
 # torch_neuronx.jit doesn't exist in private-torch-neuronx; use identity function
 def jit(fn=None, **kwargs):
@@ -107,8 +108,14 @@ class CausalWanAttentionBlockTP(nn.Module):
         self.norm2 = WanLayerNorm(dim, eps)
 
         # attention (will be sharded by shard_model_tp)
-        self.self_attn = CausalWanSelfAttention(
-            dim, num_heads, local_attn_size, sink_size, qk_norm, eps, layer_idx, frame_length)
+        sp_degree = ps.get_world_size("attn-sp") if ps.is_registered("attn-sp") else 1
+        if sp_degree > 1:
+            from models.self_attn_sp import CausalWanSelfAttentionSP
+            self.self_attn = CausalWanSelfAttentionSP(
+                dim, num_heads, local_attn_size, sink_size, qk_norm, eps, layer_idx, frame_length)
+        else:
+            self.self_attn = CausalWanSelfAttention(
+                dim, num_heads, local_attn_size, sink_size, qk_norm, eps, layer_idx, frame_length)
         self.cross_attn = WanT2VCrossAttention(
             dim, num_heads, (-1, -1), qk_norm, eps, layer_idx=layer_idx)
 
