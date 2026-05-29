@@ -236,17 +236,15 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
     dit_model.head = _compile(dit_model.head)
 
     for i, block in enumerate(dit_model.blocks):
-        # Compile sub-modules within each block
-        # norm_q/norm_k left in eager — they contain all_reduce (TPRMSNorm)
+        # Compile only ColumnParallel sub-modules (no all_reduce inside).
+        # RowParallel (o projections, ffn fc2) and TPRMSNorm (norm_q/k)
+        # contain all_reduce — leave in eager to preserve TP correctness.
         block.self_attn.q = _compile(block.self_attn.q)
         block.self_attn.k = _compile(block.self_attn.k)
         block.self_attn.v = _compile(block.self_attn.v)
-        block.self_attn.o = _compile(block.self_attn.o)
         block.cross_attn.q = _compile(block.cross_attn.q)
         block.cross_attn.k = _compile(block.cross_attn.k)
         block.cross_attn.v = _compile(block.cross_attn.v)
-        block.cross_attn.o = _compile(block.cross_attn.o)
-        block.ffn = _compile(block.ffn)
 
     if rank == 0:
         logger.info(f"DiT 1.3B TP-sharded on neuron (rank {rank}, {TP_DEGREE} ranks total)")
