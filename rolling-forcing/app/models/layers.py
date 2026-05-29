@@ -66,6 +66,8 @@ if USE_NKI_KERNELS:
 else:
     print("  [3/4] kernels/self_attention.py     — SKIPPED (disabled)")
 
+build_rope_grids = None
+
 # --- Kernel 4/4: kv_cache_copy (kernels/kv_cache_copy.py) ---
 KV_CACHE_NKI_AVAILABLE = False
 _nki_cache_copy = None
