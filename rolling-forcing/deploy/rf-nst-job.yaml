@@ -110,6 +110,10 @@ spec:
               value: "--model-type=transformer"
             - name: NEURON_FALLBACK_ENABLED
               value: "0"
+            - name: BENCHMARK_RUNS
+              value: "1"
+            - name: DEFAULT_NUM_FRAMES
+              value: "81"
             - name: HF_TOKEN
               valueFrom:
                 secretKeyRef:
