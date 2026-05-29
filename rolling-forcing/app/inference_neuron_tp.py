@@ -225,8 +225,7 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
     # Sub-module compilation (science team pattern):
     # Compile individual Linears + FFN with fullgraph=True.
     # NKI kernels (attention, RoPE, cache) run in eager between compiled ops.
-    # This avoids dynamo guards on Python ints (no recompilation cascade).
-    _compile = lambda m: torch.compile(m, backend='neuron', dynamic=False, fullgraph=True)
+    _compile = lambda m: torch.compile(m, backend='neuron', dynamic=False)
 
     dit_model = state.dit_pipeline.generator.model
     dit_model.patch_embedding = _compile(dit_model.patch_embedding)
@@ -236,19 +235,22 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
     dit_model.head = _compile(dit_model.head)
 
     for i, block in enumerate(dit_model.blocks):
-        # Compile only ColumnParallel sub-modules (no all_reduce inside).
-        # RowParallel (o projections, ffn fc2) and TPRMSNorm (norm_q/k)
-        # contain all_reduce — leave in eager to preserve TP correctness.
         block.self_attn.q = _compile(block.self_attn.q)
         block.self_attn.k = _compile(block.self_attn.k)
         block.self_attn.v = _compile(block.self_attn.v)
+        block.self_attn.o = _compile(block.self_attn.o)
         block.cross_attn.q = _compile(block.cross_attn.q)
         block.cross_attn.k = _compile(block.cross_attn.k)
         block.cross_attn.v = _compile(block.cross_attn.v)
+        block.cross_attn.o = _compile(block.cross_attn.o)
+        block.ffn = _compile(block.ffn)
+        block.norm1 = _compile(block.norm1)
+        block.norm2 = _compile(block.norm2)
+        block.norm3 = _compile(block.norm3)
 
     if rank == 0:
         logger.info(f"DiT 1.3B TP-sharded on neuron (rank {rank}, {TP_DEGREE} ranks total)")
-        logger.info(f"  Sub-module compilation: Q/K/V/O + norms + FFN per block (fullgraph=True)")
+        logger.info(f"  Sub-module compilation: all sub-modules per block (fullgraph=True)")
         logger.info(f"  NKI kernels: self_attn, cross_attn, rope (eager between compiled ops)")
 
     # ── Load VAE (TP-aware: shard across VAE_RANKS or single rank) ───────────
