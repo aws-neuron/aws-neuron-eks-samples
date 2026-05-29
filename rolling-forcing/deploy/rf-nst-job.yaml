@@ -27,12 +27,12 @@ spec:
               set -euxo pipefail
 
               git clone -b neuron-science-port https://yahavb:${GITHUB_TOKEN}@github.com/aws-neuron/aws-neuron-eks-samples.git
-              cd aws-neuron-eks-samples/rolling-forcing/app/science_team
+              cd aws-neuron-eks-samples/rolling-forcing/app
+              export RF_DEVICE_BACKEND=neuron
 
               # Install dependencies
-              uv pip install -r ../requirements.txt
+              uv pip install -r requirements.txt
               uv pip install "setuptools<81"
-              uv pip install "diffusers==0.37.1" "transformers>=5.0"
               uv pip install git+https://github.com/pytorch/vision.git@v0.25.0 --no-deps --no-cache --no-build-isolation
 
               # Model weights from S3 cache
@@ -63,24 +63,26 @@ spec:
               fi
 
               echo "============================================"
-              echo "  NST E2E PIPELINE: TP=4, SP=1"
+              echo "  NST: Sub-module compilation (fullgraph=True)"
               echo "============================================"
 
-              # Run e2e pipeline (T5 + DiT + VAE)
+              # Launch benchmark with sub-module compilation
+              export REPO_DIR=$(pwd)
               torchrun --nproc_per_node=4 --master_port=29500 \
-                e2e_pipeline.py \
-                --tp_degree 4 \
-                --config_path configs/rolling_forcing_dmd.yaml \
-                --checkpoint_path checkpoints/rolling_forcing_dmd.pt \
-                --prompt_file prompts/example_prompts.txt \
-                --num_output_frames 81 \
-                --output_folder /tmp/nst_output \
-                --use_ema 2>&1
+                inference_neuron_tp.py --benchmark 2>&1
 
-              echo "============================================"
-              echo "  DONE"
-              echo "============================================"
-              ls -la /tmp/nst_output/ 2>/dev/null || true
+              # Archive results
+              RUN_DIR=$(find /tmp -maxdepth 1 -name "rf_run_*" -type d | sort | tail -1)
+              if [[ -n "$RUN_DIR" ]]; then
+                TIMESTAMP=$(basename "$RUN_DIR" | sed 's/rf_run_//')
+                ARCHIVE_DIR="/var/mdl/rolling_forcing/runs/nst_${TIMESTAMP}"
+                mkdir -p "$ARCHIVE_DIR"
+                cp "$RUN_DIR/benchmark.json" "$ARCHIVE_DIR/" 2>/dev/null || true
+                if [[ -d "$RUN_DIR/frames" ]]; then
+                  cp -r "$RUN_DIR/frames" "$ARCHIVE_DIR/frames" 2>/dev/null || true
+                fi
+                echo "Archived to $ARCHIVE_DIR"
+              fi
           resources:
             claims:
               - name: s-lnc2-trn2

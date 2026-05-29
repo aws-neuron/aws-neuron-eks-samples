@@ -222,24 +222,39 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
     # Move TP-sharded DiT to this rank's Neuron core
     state.dit_pipeline.generator.model = state.dit_pipeline.generator.model.to(NEURON_DEVICE)
 
-    # Compile whole DiT blocks — HYBRID mode:
-    # torch.compile captures the full block including NKI kernels via wrap_nki HOP.
-    # No @torch.compiler.disable — NKI kernels are embedded in the compiled graph.
-    # This fuses Linear projections + norms + FFN while keeping NKI kernels eager.
+    # Sub-module compilation (science team pattern):
+    # Compile individual Linears + FFN with fullgraph=True.
+    # NKI kernels (attention, RoPE, cache) run in eager between compiled ops.
+    # This avoids dynamo guards on Python ints (no recompilation cascade).
+    _compile = lambda m: torch.compile(m, backend='neuron', dynamic=False, fullgraph=True)
+
     dit_model = state.dit_pipeline.generator.model
-    dit_model.patch_embedding = torch.compile(dit_model.patch_embedding, backend='neuron', dynamic=False)
-    dit_model.text_embedding = torch.compile(dit_model.text_embedding, backend='neuron', dynamic=False)
-    dit_model.time_embedding = torch.compile(dit_model.time_embedding, backend='neuron', dynamic=False)
-    dit_model.time_projection = torch.compile(dit_model.time_projection, backend='neuron', dynamic=False)
-    dit_model.head = torch.compile(dit_model.head, backend='neuron', dynamic=False)
-    # Compile blocks HYBRID (Linear+norm+FFN compiled, NKI kernels eager via graph breaks)
+    dit_model.patch_embedding = _compile(dit_model.patch_embedding)
+    dit_model.text_embedding = _compile(dit_model.text_embedding)
+    dit_model.time_embedding = _compile(dit_model.time_embedding)
+    dit_model.time_projection = _compile(dit_model.time_projection)
+    dit_model.head = _compile(dit_model.head)
+
     for i, block in enumerate(dit_model.blocks):
-        dit_model.blocks[i] = torch.compile(block, backend='neuron', dynamic=False)
+        # Compile sub-modules within each block
+        block.self_attn.q = _compile(block.self_attn.q)
+        block.self_attn.k = _compile(block.self_attn.k)
+        block.self_attn.v = _compile(block.self_attn.v)
+        block.self_attn.o = _compile(block.self_attn.o)
+        block.self_attn.norm_q = _compile(block.self_attn.norm_q)
+        block.self_attn.norm_k = _compile(block.self_attn.norm_k)
+        block.cross_attn.q = _compile(block.cross_attn.q)
+        block.cross_attn.k = _compile(block.cross_attn.k)
+        block.cross_attn.v = _compile(block.cross_attn.v)
+        block.cross_attn.o = _compile(block.cross_attn.o)
+        block.cross_attn.norm_q = _compile(block.cross_attn.norm_q)
+        block.cross_attn.norm_k = _compile(block.cross_attn.norm_k)
+        block.ffn = _compile(block.ffn)
 
     if rank == 0:
         logger.info(f"DiT 1.3B TP-sharded on neuron (rank {rank}, {TP_DEGREE} ranks total)")
-        logger.info(f"  Compiled HYBRID blocks: {len(dit_model.blocks)} blocks (Linear+norm+FFN compiled, NKI eager)")
-        logger.info(f"  NKI kernels: self_attn, cross_attn, rope (eager via @torch.compiler.disable)")
+        logger.info(f"  Sub-module compilation: Q/K/V/O + norms + FFN per block (fullgraph=True)")
+        logger.info(f"  NKI kernels: self_attn, cross_attn, rope (eager between compiled ops)")
 
     # ── Load VAE (TP-aware: shard across VAE_RANKS or single rank) ───────────
     if VAE_TP_DEGREE > 1:
