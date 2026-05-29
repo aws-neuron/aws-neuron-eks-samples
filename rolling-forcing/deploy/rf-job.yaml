@@ -239,7 +239,7 @@ spec:
             - name: USE_NEFF_CACHE
               value: "false"
             - name: BENCHMARK_RUNS
-              value: "1"
+              value: "3"
             - name: CONFIG_PATH
               value: "configs/default_config.yaml"
             - name: MODEL_PATH
@@ -249,7 +249,7 @@ spec:
             - name: CHECKPOINT_PATH
               value: "checkpoints/rolling_forcing_dmd.pt"
             - name: DEFAULT_NUM_FRAMES
-              value: "21"
+              value: "161"
             - name: DEFAULT_FPS
               value: "16"
             - name: TP_DEGREE
