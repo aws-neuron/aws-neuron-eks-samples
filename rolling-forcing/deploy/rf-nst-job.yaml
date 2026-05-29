@@ -32,6 +32,7 @@ spec:
               # Install dependencies
               uv pip install -r ../requirements.txt
               uv pip install "setuptools<81"
+              uv pip install "diffusers==0.37.1" "transformers>=5.0"
               uv pip install git+https://github.com/pytorch/vision.git@v0.25.0 --no-deps --no-cache --no-build-isolation
 
               # Model weights from S3 cache
