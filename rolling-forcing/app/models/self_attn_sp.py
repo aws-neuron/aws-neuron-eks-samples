@@ -143,13 +143,20 @@ class CausalWanSelfAttentionSP(nn.Module):
                 v_dst.copy_(v_src)
 
     def _gather_qkv(self, q_local, k_local, v_local, L):
-        """AllGather QKV across all ranks (world group)."""
-        if self.world_size == 1:
+        """AllGather QKV across SP group to get full sequence.
+
+        Each SP rank has [L // sp_degree, dim_local] after ColumnParallel QKV.
+        Gather along sequence dim across SP ranks → [L, dim_local].
+        """
+        if self.sp_degree == 1:
             return q_local, k_local, v_local
 
+        local_seq = q_local.shape[0]
+        dim_local = q_local.shape[1]  # dim // tp_degree
+
         def _gather(t):
-            out = torch.empty(L, self.dim, dtype=t.dtype, device=t.device)
-            ps.all_gather_into_tensor(out, t, "world")
+            out = torch.empty(L, dim_local, dtype=t.dtype, device=t.device)
+            ps.all_gather_into_tensor(out, t, "attn-sp")
             return out
 
         return _gather(q_local), _gather(k_local), _gather(v_local)
@@ -178,37 +185,31 @@ class CausalWanSelfAttentionSP(nn.Module):
         frame_seqlen = h * w
         L = f * h * w  # full sequence length
 
-        # ── Phase 1: Local QKV + AllGather ──────────────────────────────
-        # QKV projection on local input (ColumnParallel gives dim//tp per rank)
-        q_local = self.norm_q(self.q(x))[0]  # [seq_local, dim]
+        # ── Phase 1: Local QKV + AllGather across SP ────────────────────
+        # QKV projection (ColumnParallel: output is [seq_local, dim//tp])
+        q_local = self.norm_q(self.q(x))[0]  # [seq_local, dim//tp]
         k_local = self.norm_k(self.k(x))[0]
         v_local = self.v(x)[0]
 
-        # AllGather across world to get full [L, dim]
+        # AllGather across SP to get full sequence: [L, dim//tp]
         q_full, k_full, v_full = self._gather_qkv(q_local, k_local, v_local, L)
 
-        # Slice to local TP heads: [L, num_heads, head_dim] → [L, heads_per_shard, head_dim]
-        h_start = self.tp_rank * n_local
-        h_end = h_start + n_local
-        q_full_4d = q_full.view(L, self.num_heads, d).unsqueeze(0)  # [1, L, num_heads, d]
-        k_full_4d = k_full.view(L, self.num_heads, d).unsqueeze(0)
-        v = v_full.view(L, self.num_heads, d)[:, h_start:h_end].contiguous().unsqueeze(0)
+        # Reshape to [1, L, heads_per_shard, head_dim] — already local heads only
+        dim_local = n_local * d  # heads_per_shard * head_dim
+        q = q_full.view(L, n_local, d).unsqueeze(0)  # [1, L, n_local, d]
+        k = k_full.view(L, n_local, d).unsqueeze(0)
+        v = v_full.view(L, n_local, d).unsqueeze(0)
 
         # ── Phase 1b: RoPE on full sequence ─────────────────────────────
         roped_query_full = self._nki_rope_apply(
-            q_full_4d[:, :, h_start:h_end].contiguous(),
-            grid_sizes, freqs_cos, freqs_sin, start_frame=current_start_frame_t)
+            q, grid_sizes, freqs_cos, freqs_sin, start_frame=current_start_frame_t)
         roped_key = self._nki_rope_apply(
-            k_full_4d[:, :, h_start:h_end].contiguous(),
-            grid_sizes, freqs_cos, freqs_sin, start_frame=current_start_frame_t)
+            k, grid_sizes, freqs_cos, freqs_sin, start_frame=current_start_frame_t)
 
         # SP: slice Q to this SP rank's shard
         sp_shard_len = L // self.sp_degree
         sp_start = self.sp_rank * sp_shard_len
         roped_query = roped_query_full[:, sp_start:sp_start + sp_shard_len]
-
-        # K for cache (un-roped for anchor, roped for non-anchor)
-        k = k_full_4d[:, :, h_start:h_end].contiguous()
 
         num_frames_per_block = self.block_length // self.frame_length
         grid_sizes_one_block = (num_frames_per_block, h, w)
@@ -331,15 +332,6 @@ class CausalWanSelfAttentionSP(nn.Module):
         )
         x = x[:seqlen_q_orig].unsqueeze(0).flatten(2)
 
-        # ── Phase 5: O projection + ReduceScatter ───────────────────────
+        # ── Phase 5: O projection (RowParallel handles all_reduce internally)
         x = self.o(x)
-        if self.tp_degree > 1:
-            seq_len = x.shape[1]
-            x_flat = x.reshape(-1, self.dim)
-            rs_out = torch.empty(
-                seq_len // self.tp_degree, self.dim,
-                dtype=x.dtype, device=x.device)
-            ps.reduce_scatter_tensor(rs_out, x_flat, "attn-tp")
-            x = rs_out.unsqueeze(0)
-
         return x
