@@ -183,31 +183,26 @@ class CausalWanSelfAttentionSP(nn.Module):
             k_full = k_local
             v_full = v_local
 
-        # Q stays local (SP shard) — this is the compute savings
-        q = q_local  # [1, L/SP, n_local, d]
+        # ── Phase 1b: RoPE on full sequence ─────────────────────────────
+        # AllGather Q across SP too (for correct RoPE positions)
+        if self.sp_degree > 1:
+            q_full = torch.empty(b, L, n_local, d, dtype=q_local.dtype, device=q_local.device)
+            ps.all_gather_into_tensor(
+                q_full.view(L, n_local * d),
+                q_local.view(s_local, n_local * d), "attn-sp")
+            q_full = q_full.view(b, L, n_local, d)
+        else:
+            q_full = q_local
 
-        # ── Phase 1b: RoPE ──────────────────────────────────────────────
-        # RoPE on full K (needed for cache)
+        # RoPE on full Q and K (correct 3D positions)
+        roped_query_full = self._nki_rope_apply(
+            q_full, grid_sizes, freqs_cos, freqs_sin, start_frame=current_start_frame_t)
         roped_key = self._nki_rope_apply(
             k_full, grid_sizes, freqs_cos, freqs_sin, start_frame=current_start_frame_t)
 
-        # RoPE on local Q — need to compute which frames this SP shard covers
+        # Slice Q back to SP shard (SP savings: attend with fewer Q tokens)
         sp_start_token = self.sp_rank * s_local
-        sp_start_frame = sp_start_token // frame_seqlen
-        sp_num_frames = (s_local + frame_seqlen - 1) // frame_seqlen
-        sp_grid = (sp_num_frames, h, w)
-        sp_start_frame_t = current_start_frame_t + sp_start_frame
-
-        # Pad Q to full sp_num_frames * frame_seqlen for RoPE (may have partial frame)
-        q_padded_len = sp_num_frames * frame_seqlen
-        if s_local < q_padded_len:
-            q_padded = torch.nn.functional.pad(q, (0, 0, 0, 0, 0, q_padded_len - s_local))
-        else:
-            q_padded = q
-
-        roped_query = self._nki_rope_apply(
-            q_padded, sp_grid, freqs_cos, freqs_sin, start_frame=sp_start_frame_t)
-        roped_query = roped_query[:, :s_local]  # slice back to actual SP shard
+        roped_query = roped_query_full[:, sp_start_token:sp_start_token + s_local]
 
         # K/V for cache (full sequence, local heads)
         k = k_full

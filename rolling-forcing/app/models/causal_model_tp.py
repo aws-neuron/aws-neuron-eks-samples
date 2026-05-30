@@ -437,9 +437,11 @@ class CausalWanModelTP(ModelMixin, ConfigMixin):
             x = x[:, sp_start:sp_start + shard_len].contiguous()
 
             # Expand e0 to per-token and shard
-            # e0: [B, num_frames, 6, dim] → expand to [B, L, 6, dim] → shard
-            e_expanded = e0.unsqueeze(3).expand(
-                -1, -1, -1, frame_seqlen, -1).reshape(1, L, 6, self.dim)
+            # e0: [B, num_frames, 6, dim] → [B, num_frames, 1, 6, dim]
+            #   → expand to [B, num_frames, frame_seqlen, 6, dim]
+            #   → reshape to [B, L, 6, dim] → shard
+            e_expanded = e0.unsqueeze(2).expand(
+                -1, -1, frame_seqlen, -1, -1).reshape(1, L, 6, self.dim)
             e_shard = e_expanded[:, sp_start:sp_start + shard_len].contiguous()
 
             # Also shard modulation bias per block (add once here)
