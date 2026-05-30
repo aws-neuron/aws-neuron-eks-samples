@@ -185,8 +185,39 @@ class CausalWanAttentionBlockTP(nn.Module):
         cache_start=None,
         num_valid_frames=None,
         shared_buffers=None,
-        current_start_frame_t=None
+        current_start_frame_t=None,
+        sp_mode=False,
     ):
+        if sp_mode:
+            # SP mode: e is per-token [B, shard_len, 6, C], x is [B, shard_len, C]
+            # Simple element-wise modulation (no unflatten/reshape)
+            e0, e1, e2, e3, e4, e5 = e[:, :, 0], e[:, :, 1], e[:, :, 2], e[:, :, 3], e[:, :, 4], e[:, :, 5]
+            ones = torch.ones_like(e1)
+
+            # self-attention
+            y = self.self_attn(
+                self.norm1(x) * (ones + e1) + e0,
+                grid_sizes, freqs_cos, freqs_sin,
+                kv_cache, current_start, cache_start,
+                updating_cache=updating_cache,
+                num_valid_frames=num_valid_frames,
+                shared_buffers=shared_buffers,
+                current_start_frame_t=current_start_frame_t,
+            )
+            x = x + y * e2
+
+            # cross-attention
+            x = x + self.cross_attn(
+                self.norm3(x), context, context_lens,
+                crossattn_cache=crossattn_cache)
+
+            # FFN
+            y = self.ffn(self.norm2(x) * (ones + e4) + e3)
+            x = x + y * e5
+
+            return x
+
+        # Non-SP mode: original per-frame modulation
         num_frames = e.shape[1]
         frame_seqlen = x.shape[1] // num_frames
         e0, e1, e2, e3, e4, e5 = self._modulation_chunk(self.modulation, e)
@@ -387,9 +418,35 @@ class CausalWanModelTP(ModelMixin, ConfigMixin):
                 cache["v"] = block.cross_attn.v(context).view(b_ctx, -1, n_heads, d_head)
                 cache["is_init"] = True
 
-        # Transformer blocks (TP-sharded)
+        # Transformer blocks (TP-sharded, optionally SP-sharded)
+        sp_degree = ps.get_world_size("attn-sp") if ps.is_registered("attn-sp") else 1
+        sp_mode = sp_degree > 1
+
+        num_frames = e0.shape[1]
+        frame_seqlen = x.shape[1] // num_frames
+        current_start_frame_t = torch.tensor(
+            current_start // frame_seqlen, dtype=torch.int64, device=x.device)
+
+        if sp_mode:
+            sp_rank = ps.get_rank("attn-sp")
+            L = x.shape[1]
+            shard_len = L // sp_degree
+            sp_start = sp_rank * shard_len
+
+            # Shard x along sequence
+            x = x[:, sp_start:sp_start + shard_len].contiguous()
+
+            # Expand e0 to per-token and shard
+            # e0: [B, num_frames, 6, dim] → expand to [B, L, 6, dim] → shard
+            e_expanded = e0.unsqueeze(3).expand(
+                -1, -1, -1, frame_seqlen, -1).reshape(1, L, 6, self.dim)
+            e_shard = e_expanded[:, sp_start:sp_start + shard_len].contiguous()
+
+            # Also shard modulation bias per block (add once here)
+            # modulation is [1, 6, dim] — needs to be added to e per-token
+            # Do this per-block inside the loop (modulation is per-block param)
+
         kwargs = dict(
-            e=e0,
             grid_sizes=grid_sizes,
             freqs_cos=self.freqs_cos,
             freqs_sin=self.freqs_sin,
@@ -398,13 +455,19 @@ class CausalWanModelTP(ModelMixin, ConfigMixin):
             updating_cache=updating_cache,
             num_valid_frames=num_valid_frames,
             shared_buffers=shared_buffers,
+            sp_mode=sp_mode,
         )
 
-        frame_seqlen = x.shape[1] // e0.shape[1]
-        current_start_frame_t = torch.tensor(
-            current_start // frame_seqlen, dtype=torch.int64, device=x.device)
+        if not sp_mode:
+            kwargs["e"] = e0
 
         for block_index, block in enumerate(self.blocks):
+            if sp_mode:
+                # Add per-block modulation bias to per-token e shard
+                mod = block.modulation  # [1, 6, dim]
+                e_with_mod = e_shard + mod.unsqueeze(1)  # [1, shard_len, 6, dim]
+                kwargs["e"] = e_with_mod
+
             kwargs.update({
                 "kv_cache": kv_cache[block_index],
                 "crossattn_cache": crossattn_cache[block_index],
@@ -413,6 +476,14 @@ class CausalWanModelTP(ModelMixin, ConfigMixin):
                 "current_start_frame_t": current_start_frame_t,
             })
             x = block(x, **kwargs)
+
+        if sp_mode:
+            # AllGather x back to full sequence for head + unpatchify
+            x_full = torch.empty(1, L, self.dim, dtype=x.dtype, device=x.device)
+            ps.all_gather_into_tensor(
+                x_full.view(L, self.dim),
+                x.view(shard_len, self.dim), "attn-sp")
+            x = x_full
 
         # Head + unpatchify (replicated)
         x = self.head(x, e.unflatten(dim=0, sizes=t.shape).unsqueeze(2))
