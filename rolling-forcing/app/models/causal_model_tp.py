@@ -45,6 +45,43 @@ from models.layers import (
 from models.tp_utils import all_reduce_sum, get_tp_rank, get_tp_world_size
 from models import parallel_state as ps
 
+
+def expand_e_for_sp_shard(e0, sp_rank, sp_degree, num_frames, frame_seqlen):
+    """Expand per-frame time embedding to per-token, then slice to SP shard.
+
+    e0: [B, num_frames, 6, dim] — per-frame embedding
+    Returns: [B, num_frames_local, 6, dim] for this SP rank's token shard.
+
+    With SP=2 and non-frame-aligned shards, we expand to all tokens
+    then slice to the SP shard.
+    """
+    if sp_degree == 1:
+        return e0
+    B, F, I, C = e0.shape
+    L = F * frame_seqlen
+    shard_len = L // sp_degree
+    sp_start = sp_rank * shard_len
+
+    # Figure out which frames this shard covers
+    start_frame = sp_start // frame_seqlen
+    end_frame = (sp_start + shard_len + frame_seqlen - 1) // frame_seqlen
+    end_frame = min(end_frame, F)
+    F_sub = end_frame - start_frame
+    start_off = sp_start - start_frame * frame_seqlen
+
+    # Expand e to per-token for the covered frames
+    e_sub = e0[:, start_frame:end_frame]  # [B, F_sub, I, C]
+    e_exp = e_sub.unsqueeze(3).expand(B, F_sub, I, frame_seqlen, C)
+    e_exp = e_exp.reshape(B, F_sub * frame_seqlen, I, C)
+
+    # Slice to our shard
+    e_shard = e_exp[:, start_off:start_off + shard_len]  # [B, shard_len, I, C]
+
+    # Reshape back to [B, num_frames_local, I, C] for modulation functions
+    # num_frames_local = shard_len // frame_seqlen (if evenly divisible)
+    # Otherwise we keep per-token and modify the block to handle it
+    return e_shard  # [B, shard_len, I, C] — per-token, not per-frame
+
 # torch_neuronx.jit doesn't exist in private-torch-neuronx; use identity function
 def jit(fn=None, **kwargs):
     """No-op wrapper since torch_neuronx.jit is not available."""

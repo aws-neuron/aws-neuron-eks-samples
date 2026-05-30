@@ -1,16 +1,12 @@
 """SP-aware CausalWanSelfAttention — sequence parallelism support.
 
-Drop-in replacement for CausalWanSelfAttention in layers.py when running
-with SP > 1 (e.g., TP=4 × SP=2 on 8 NeuronCores).
-
-Key differences from base class:
-  - Input x is [1, seq_len, dim] (full sequence, NOT SP-sharded at input)
-  - Internally: AllGather QKV across world, slice heads, RoPE on full seq,
-    slice Q to SP shard, attend with local Q + full K/V, O proj + ReduceScatter
+SP sharding:
+  - Input x to the BLOCK is [1, L/SP, dim] (sequence-sharded at model level)
+  - QKV projection on local shard: [1, L/SP, dim_local]
+  - AllGather K/V across SP group: [1, L, dim_local] for cache + full attention
+  - Q stays local: [1, L/SP, dim_local] → reduces attention compute
   - KV cache stores full sequence (not SP-sharded)
-
-The SP sharding happens INSIDE this module (after QKV projection),
-so the caller (CausalWanAttentionBlockTP) doesn't need changes.
+  - Output is [1, L/SP, dim] (stays sharded for next block)
 """
 import math
 import torch
@@ -32,11 +28,6 @@ from models import parallel_state as ps
 
 
 class CausalWanSelfAttentionSP(nn.Module):
-    """SP-aware self-attention for TP=4 × SP=2 (8 ranks).
-
-    Same interface as CausalWanSelfAttention but with AllGather/ReduceScatter
-    for sequence parallelism.
-    """
 
     def __init__(self,
                  dim,
@@ -48,7 +39,7 @@ class CausalWanSelfAttentionSP(nn.Module):
                  layer_idx=0,
                  frame_length=1560):
         assert dim % num_heads == 0
-        assert qk_norm, "qk_norm must be True"
+        assert qk_norm
         super().__init__()
         self.dim = dim
         self.num_heads = num_heads
@@ -61,16 +52,14 @@ class CausalWanSelfAttentionSP(nn.Module):
         self.kv_cache_logical_size = 24 * self.frame_length
         self.layer_idx = layer_idx
 
-        # SP/TP configuration
+        # SP/TP config
         self.tp_degree = ps.get_world_size("attn-tp")
         self.sp_degree = ps.get_world_size("attn-sp")
-        self.world_size = self.tp_degree * self.sp_degree
         self.tp_rank = ps.get_rank("attn-tp")
         self.sp_rank = ps.get_rank("attn-sp")
         self.heads_per_shard = num_heads // self.tp_degree
 
-        # Layers — created at full size, shard_model_tp() replaces with
-        # ColumnParallel/RowParallel after weight loading
+        # Layers — full size, shard_model_tp() replaces with Parallel variants
         self.q = jit(nn.Linear(dim, dim))
         self.k = jit(nn.Linear(dim, dim))
         self.v = jit(nn.Linear(dim, dim))
@@ -121,7 +110,6 @@ class CausalWanSelfAttentionSP(nn.Module):
         sign = torch.ones(d, device=x.device, dtype=sin_expanded.dtype)
         sign[0::2] = -1.0
         sin_signed = sin_expanded * sign.unsqueeze(0)
-
         cos_sin = torch.cat([cos_expanded, sin_signed], dim=-1).contiguous()
 
         P = 128
@@ -142,25 +130,6 @@ class CausalWanSelfAttentionSP(nn.Module):
             if v_dst is not None:
                 v_dst.copy_(v_src)
 
-    def _gather_qkv(self, q_local, k_local, v_local, L):
-        """AllGather QKV across SP group to get full sequence.
-
-        Each SP rank has [L // sp_degree, dim_local] after ColumnParallel QKV.
-        Gather along sequence dim across SP ranks → [L, dim_local].
-        """
-        if self.sp_degree == 1:
-            return q_local, k_local, v_local
-
-        local_seq = q_local.shape[0]
-        dim_local = q_local.shape[1]  # dim // tp_degree
-
-        def _gather(t):
-            out = torch.empty(L, dim_local, dtype=t.dtype, device=t.device)
-            ps.all_gather_into_tensor(out, t, "attn-sp")
-            return out
-
-        return _gather(q_local), _gather(k_local), _gather(v_local)
-
     def _call_self_attn_nki(self, q, k, v, identity, mask, softmax_scale, num_sections):
         return self._self_attn_kernel(q, k, v, identity, mask,
                                       softmax_scale=softmax_scale,
@@ -180,41 +149,74 @@ class CausalWanSelfAttentionSP(nn.Module):
         shared_buffers=None,
         current_start_frame_t=None
     ):
-        b, s, n_local, d = 1, x.shape[1], self.heads_per_shard, self.head_dim
+        """SP-aware self-attention.
+
+        x is [1, L/SP, dim] — already sequence-sharded by the model.
+        """
+        b = 1
+        s_local = x.shape[1]  # L / SP
+        n_local = self.heads_per_shard
+        d = self.head_dim
         f, h, w = grid_sizes
         frame_seqlen = h * w
         L = f * h * w  # full sequence length
 
-        # ── Phase 1: Local QKV + AllGather across SP ────────────────────
-        # QKV projection (ColumnParallel: output is [seq_local, dim//tp])
-        q_local = self.norm_q(self.q(x))[0]  # [seq_local, dim//tp]
-        k_local = self.norm_k(self.k(x))[0]
-        v_local = self.v(x)[0]
+        # ── Phase 1: QKV on local shard + AllGather K/V ─────────────────
+        # QKV projection on SP shard (ColumnParallel: output dim_local)
+        q_local = self.norm_q(self.q(x)).view(b, s_local, n_local, d)
+        k_local = self.norm_k(self.k(x)).view(b, s_local, n_local, d)
+        v_local = self.v(x).view(b, s_local, n_local, d)
 
-        # AllGather across SP to get full sequence: [L, dim//tp]
-        q_full, k_full, v_full = self._gather_qkv(q_local, k_local, v_local, L)
+        # AllGather K and V across SP to get full sequence
+        if self.sp_degree > 1:
+            k_full = torch.empty(b, L, n_local, d, dtype=k_local.dtype, device=k_local.device)
+            v_full = torch.empty(b, L, n_local, d, dtype=v_local.dtype, device=v_local.device)
+            ps.all_gather_into_tensor(
+                k_full.view(L, n_local * d),
+                k_local.view(s_local, n_local * d), "attn-sp")
+            ps.all_gather_into_tensor(
+                v_full.view(L, n_local * d),
+                v_local.view(s_local, n_local * d), "attn-sp")
+            k_full = k_full.view(b, L, n_local, d)
+            v_full = v_full.view(b, L, n_local, d)
+        else:
+            k_full = k_local
+            v_full = v_local
 
-        # Reshape to [1, L, heads_per_shard, head_dim] — already local heads only
-        dim_local = n_local * d  # heads_per_shard * head_dim
-        q = q_full.view(L, n_local, d).unsqueeze(0)  # [1, L, n_local, d]
-        k = k_full.view(L, n_local, d).unsqueeze(0)
-        v = v_full.view(L, n_local, d).unsqueeze(0)
+        # Q stays local (SP shard) — this is the compute savings
+        q = q_local  # [1, L/SP, n_local, d]
 
-        # ── Phase 1b: RoPE on full sequence ─────────────────────────────
-        roped_query_full = self._nki_rope_apply(
-            q, grid_sizes, freqs_cos, freqs_sin, start_frame=current_start_frame_t)
+        # ── Phase 1b: RoPE ──────────────────────────────────────────────
+        # RoPE on full K (needed for cache)
         roped_key = self._nki_rope_apply(
-            k, grid_sizes, freqs_cos, freqs_sin, start_frame=current_start_frame_t)
+            k_full, grid_sizes, freqs_cos, freqs_sin, start_frame=current_start_frame_t)
 
-        # SP: slice Q to this SP rank's shard
-        sp_shard_len = L // self.sp_degree
-        sp_start = self.sp_rank * sp_shard_len
-        roped_query = roped_query_full[:, sp_start:sp_start + sp_shard_len]
+        # RoPE on local Q — need to compute which frames this SP shard covers
+        sp_start_token = self.sp_rank * s_local
+        sp_start_frame = sp_start_token // frame_seqlen
+        sp_num_frames = (s_local + frame_seqlen - 1) // frame_seqlen
+        sp_grid = (sp_num_frames, h, w)
+        sp_start_frame_t = current_start_frame_t + sp_start_frame
+
+        # Pad Q to full sp_num_frames * frame_seqlen for RoPE (may have partial frame)
+        q_padded_len = sp_num_frames * frame_seqlen
+        if s_local < q_padded_len:
+            q_padded = torch.nn.functional.pad(q, (0, 0, 0, 0, 0, q_padded_len - s_local))
+        else:
+            q_padded = q
+
+        roped_query = self._nki_rope_apply(
+            q_padded, sp_grid, freqs_cos, freqs_sin, start_frame=sp_start_frame_t)
+        roped_query = roped_query[:, :s_local]  # slice back to actual SP shard
+
+        # K/V for cache (full sequence, local heads)
+        k = k_full
+        v = v_full
 
         num_frames_per_block = self.block_length // self.frame_length
         grid_sizes_one_block = (num_frames_per_block, h, w)
 
-        # ── Phase 2: Cache management (same as base) ────────────────────
+        # ── Phase 2: Cache management (operates on full sequence) ───────
         if cache_start is None:
             cache_start = current_start
         cache_end = cache_start + self.block_length
@@ -255,7 +257,7 @@ class CausalWanSelfAttentionSP(nn.Module):
             kv_cache["global_end_index"] = cache_end
             kv_cache["local_end_index"] = local_end_index
 
-        # ── Phase 3: Assemble KV (same as base) ─────────────────────────
+        # ── Phase 3: Assemble KV (same as base — full sequence) ─────────
         if updating_cache:
             cache_len = min(local_end_index, self.max_attention_size)
             cache_start_pos = max(0, local_end_index - self.max_attention_size)
@@ -307,10 +309,10 @@ class CausalWanSelfAttentionSP(nn.Module):
                 buffer_v[0, offset:offset + valid_tokens], v[0, :valid_tokens])
             k_len_int = offset + valid_tokens
 
-        # ── Phase 4: Attention (Q is SP-sharded, K/V full) ──────────────
-        q_kern = roped_query[0].permute(1, 2, 0).contiguous()
-        k_kern = buffer_k[0].permute(1, 2, 0).contiguous()
-        v_kern = buffer_v[0].permute(1, 0, 2).contiguous()
+        # ── Phase 4: Attention (Q is SP-local, K/V full from buffer) ────
+        q_kern = roped_query[0].permute(1, 2, 0).contiguous()   # [n_local, d, L/SP]
+        k_kern = buffer_k[0].permute(1, 2, 0).contiguous()       # [n_local, d, buf_size]
+        v_kern = buffer_v[0].permute(1, 0, 2).contiguous()       # [n_local, buf_size, d]
 
         seqlen_k = k_kern.shape[2]
         seqlen_q_orig = q_kern.shape[2]
@@ -330,8 +332,8 @@ class CausalWanSelfAttentionSP(nn.Module):
             softmax_scale=self.softmax_scale,
             num_sections=num_sections,
         )
-        x = x[:seqlen_q_orig].unsqueeze(0).flatten(2)
+        x = x[:seqlen_q_orig].unsqueeze(0).flatten(2)  # [1, L/SP, dim_local]
 
-        # ── Phase 5: O projection (RowParallel handles all_reduce internally)
+        # ── Phase 5: O projection (RowParallel handles all_reduce)
         x = self.o(x)
-        return x
+        return x  # [1, L/SP, dim]
