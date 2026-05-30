@@ -237,23 +237,21 @@ class RowParallelLinear(nn.Module):
         self.in_features_per_rank = in_features // tp_degree
         self.tp_degree = tp_degree
 
-        self.weight = nn.Parameter(
-            torch.empty(out_features, self.in_features_per_rank))
+        # Inner linear module (can be compiled with fullgraph=True separately)
+        self.linear = nn.Linear(self.in_features_per_rank, out_features, bias=False)
+
+        # Bias applied after all-reduce
         if bias:
-            # Only rank 0 adds bias to avoid double-counting after all-reduce
-            # Actually, we add bias on all ranks and scale — simpler: only add
-            # bias after all-reduce. Store full bias but only apply on one rank.
-            # Simplest correct approach: store bias, add after all-reduce.
             self.bias = nn.Parameter(torch.empty(out_features))
         else:
             self.register_parameter('bias', None)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Local matmul (no bias yet)
-        out = nn.functional.linear(x, self.weight, None)
-        # All-reduce across TP ranks
+        # Local matmul via inner linear module (can be compiled separately)
+        out = self.linear(x)
+        # All-reduce across TP ranks (stays eager — works with subgroups)
         out = all_reduce_sum(out)
-        # Add bias after all-reduce (only one copy of bias needed)
+        # Add bias after all-reduce
         if self.bias is not None:
             out = out + self.bias
         return out
@@ -331,7 +329,7 @@ def shard_linear_row(linear: nn.Linear, tp_rank: int, tp_degree: int
     # Shard weight: [out_features, in_features] → [out_features, chunk_size]
     start = tp_rank * chunk_size
     end = start + chunk_size
-    row_linear.weight = nn.Parameter(
+    row_linear.linear.weight = nn.Parameter(
         linear.weight.data[:, start:end].contiguous())
 
     if linear.bias is not None:
