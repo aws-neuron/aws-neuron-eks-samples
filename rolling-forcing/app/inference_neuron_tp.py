@@ -251,10 +251,6 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
         # FFN fc1 (ColumnParallel) + GELU — compile whole module
         block.ffn[0] = _compile(block.ffn[0])
         block.ffn[1] = _compile(block.ffn[1])
-        # RowParallel layers — compile inner linear, all_reduce stays eager
-        block.self_attn.o.linear = _compile(block.self_attn.o.linear)
-        block.cross_attn.o.linear = _compile(block.cross_attn.o.linear)
-        block.ffn[2].linear = _compile(block.ffn[2].linear)
 
     if rank == 0:
         logger.info(f"DiT 1.3B TP-sharded on neuron (rank {rank}, {TP_DEGREE} ranks total)")
