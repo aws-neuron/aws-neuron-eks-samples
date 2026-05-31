@@ -120,6 +120,56 @@ class CausalWanSelfAttentionSP(nn.Module):
         out = self._rope_kernel(x_nki, cos_sin, num_heads=n, head_dim=d)
         return out[:seq_len].unsqueeze(0).type_as(x)
 
+    def _nki_rope_apply_shard(self, x, grid_sizes, freqs_cos, freqs_sin,
+                               start_frame_t, sp_start_token, shard_len, frame_seqlen):
+        """Apply RoPE to an SP shard using position-aware cos/sin.
+
+        Builds cos/sin for each token's 3D position (frame, h, w) based on
+        its global offset, without requiring frame-aligned boundaries.
+        """
+        b, s, n, d = x.shape
+        f, h, w = grid_sizes
+        c = d // 2
+        s0 = c - 2 * (c // 3)
+        s1 = c // 3
+        device = x.device
+
+        # Compute 3D position for each token in this shard
+        global_positions = sp_start_token + torch.arange(shard_len, device=device)
+        frame_positions = global_positions // frame_seqlen + start_frame_t
+        spatial_positions = global_positions % frame_seqlen
+        h_positions = spatial_positions // w
+        w_positions = spatial_positions % w
+
+        # Look up frequencies for each position component
+        cos_half = torch.cat([
+            freqs_cos[frame_positions, :s0],
+            freqs_cos[h_positions, s0:s0 + s1],
+            freqs_cos[w_positions, s0 + s1:],
+        ], dim=-1)  # [shard_len, c]
+
+        sin_half = torch.cat([
+            freqs_sin[frame_positions, :s0],
+            freqs_sin[h_positions, s0:s0 + s1],
+            freqs_sin[w_positions, s0 + s1:],
+        ], dim=-1)  # [shard_len, c]
+
+        cos_expanded = cos_half.repeat_interleave(2, dim=-1)
+        sin_expanded = sin_half.repeat_interleave(2, dim=-1)
+        sign = torch.ones(d, device=device, dtype=sin_expanded.dtype)
+        sign[0::2] = -1.0
+        sin_signed = sin_expanded * sign.unsqueeze(0)
+        cos_sin = torch.cat([cos_expanded, sin_signed], dim=-1).contiguous()
+
+        # Pad and call kernel
+        P = 128
+        pad = (P - shard_len % P) % P
+        cos_sin = torch.nn.functional.pad(cos_sin, (0, 0, 0, pad))
+        x_nki = torch.nn.functional.pad(x[0, :shard_len], (0, 0, 0, 0, 0, pad))
+
+        out = self._rope_kernel(x_nki, cos_sin, num_heads=n, head_dim=d)
+        return out[:shard_len].unsqueeze(0).type_as(x)
+
     def cache_copy_inplace(self, k_dst, k_src, v_dst=None, v_src=None):
         if KV_CACHE_NKI_AVAILABLE and v_dst is not None:
             _nki_kv_cache_copy(k_dst, k_src, v_dst, v_src)
@@ -183,26 +233,17 @@ class CausalWanSelfAttentionSP(nn.Module):
             k_full = k_local
             v_full = v_local
 
-        # ── Phase 1b: RoPE on full sequence ─────────────────────────────
-        # AllGather Q across SP too (for correct RoPE positions)
-        if self.sp_degree > 1:
-            q_full = torch.empty(b, L, n_local, d, dtype=q_local.dtype, device=q_local.device)
-            ps.all_gather_into_tensor(
-                q_full.view(L, n_local * d),
-                q_local.view(s_local, n_local * d), "attn-sp")
-            q_full = q_full.view(b, L, n_local, d)
-        else:
-            q_full = q_local
-
-        # RoPE on full Q and K (correct 3D positions)
-        roped_query_full = self._nki_rope_apply(
-            q_full, grid_sizes, freqs_cos, freqs_sin, start_frame=current_start_frame_t)
+        # ── Phase 1b: RoPE ──────────────────────────────────────────────
+        # RoPE on full K (needed for cache — already gathered)
         roped_key = self._nki_rope_apply(
             k_full, grid_sizes, freqs_cos, freqs_sin, start_frame=current_start_frame_t)
 
-        # Slice Q back to SP shard (SP savings: attend with fewer Q tokens)
+        # RoPE on local Q — build cos/sin for this SP shard's token positions
+        # Each token at global position p has 3D pos: (frame, h_pos, w_pos)
         sp_start_token = self.sp_rank * s_local
-        roped_query = roped_query_full[:, sp_start_token:sp_start_token + s_local]
+        roped_query = self._nki_rope_apply_shard(
+            q_local, grid_sizes, freqs_cos, freqs_sin,
+            current_start_frame_t, sp_start_token, s_local, frame_seqlen)
 
         # K/V for cache (full sequence, local heads)
         k = k_full
