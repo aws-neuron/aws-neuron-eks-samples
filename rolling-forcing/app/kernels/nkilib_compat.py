@@ -43,8 +43,8 @@ class ModularAllocator(nl.NKIObject):
         self.address = addr + size
         return addr
 
-    def alloc_sbuf_tensor(self, shape, dtype):
-        """Allocate an SBUF tensor (stub: just creates nl.ndarray)."""
+    def alloc_sbuf_tensor(self, shape, dtype, block_dim=None, num_free_tiles=None, align_to=None, name=None):
+        """Allocate an SBUF tensor (stub: just creates nl.ndarray, ignores placement hints)."""
         return nl.ndarray(shape, dtype=dtype, buffer=nl.sbuf)
 
     def get_current_address(self):
