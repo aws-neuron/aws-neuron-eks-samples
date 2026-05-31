@@ -194,11 +194,10 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
     from models.t5_tp import shard_t5_encoder
     shard_t5_encoder(state.text_encoder, tp_rank=rank, tp_degree=tp_degree_t5)
 
-    # Move to Neuron and compile
+    # Move to Neuron (no compile — T5 runs once per prompt, not worth compile overhead)
     state.text_encoder = state.text_encoder.to(NEURON_DEVICE)
-    state.text_encoder = torch.compile(state.text_encoder, backend='neuron', dynamic=False)
     if rank == 0:
-        logger.info(f"T5 loaded and TP-sharded on Neuron (TP={tp_degree_t5})")
+        logger.info(f"T5 loaded and TP-sharded on Neuron (TP={tp_degree_t5}, eager)")
 
     # All ranks need the tokenizer (lightweight, CPU-only)
     tokenizer_path = os.path.join(MODEL_PATH, "google/umt5-xxl/")
