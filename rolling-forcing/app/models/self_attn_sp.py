@@ -17,13 +17,12 @@ from models.layers import (
     ATTN_SEQLEN_MULTIPLE,
     causal_rope_rotation_nki,
     ROPE_NKI_AVAILABLE,
-    wan_flash_self_attn_nki,
-    SELF_ATTN_NKI_AVAILABLE,
     KV_CACHE_NKI_AVAILABLE,
     _nki_cache_copy,
     _nki_kv_cache_copy,
     jit,
 )
+from kernels.self_attention_nst import wan_flash_self_attn as wan_flash_self_attn_nst
 from models import parallel_state as ps
 
 
@@ -69,18 +68,11 @@ class CausalWanSelfAttentionSP(nn.Module):
 
         # NKI kernels
         self._rope_kernel = causal_rope_rotation_nki
-        self._self_attn_kernel = wan_flash_self_attn_nki
+        self._self_attn_kernel = wan_flash_self_attn_nst
 
         # Buffers
-        self.register_buffer('identity', torch.eye(self.head_dim), persistent=False)
         self.softmax_scale = 1.0 / math.sqrt(self.head_dim)
 
-        sign_pattern = torch.ones(self.head_dim, dtype=torch.float32)
-        sign_pattern[0::2] = -1.0
-        self.register_buffer(
-            'sign_pattern',
-            sign_pattern.unsqueeze(0).expand(128, -1).contiguous(),
-            persistent=False)
 
     def _nki_rope_apply(self, x, grid_sizes, freqs_cos, freqs_sin, start_frame):
         """Same RoPE as base class."""
@@ -130,10 +122,11 @@ class CausalWanSelfAttentionSP(nn.Module):
             if v_dst is not None:
                 v_dst.copy_(v_src)
 
-    def _call_self_attn_nki(self, q, k, v, identity, mask, softmax_scale, num_sections):
-        return self._self_attn_kernel(q, k, v, identity, mask,
+    def _call_self_attn_nki(self, q, k, v, softmax_scale, actual_seqlen_k):
+        return self._self_attn_kernel(q, k, v,
                                       softmax_scale=softmax_scale,
-                                      num_sections=num_sections)
+                                      actual_seqlen_k=actual_seqlen_k,
+                                      use_dynamic_loop=True)
 
     def forward(
         self,
@@ -322,25 +315,13 @@ class CausalWanSelfAttentionSP(nn.Module):
         k_kern = buffer_k[0].permute(1, 2, 0).contiguous()       # [n_local, d, buf_size]
         v_kern = buffer_v[0].permute(1, 0, 2).contiguous()       # [n_local, buf_size, d]
 
-        seqlen_k = k_kern.shape[2]
-        seqlen_q_orig = q_kern.shape[2]
-
-        P = 128
-        pad_q = (P - seqlen_q_orig % P) % P
-        q_kern = torch.nn.functional.pad(q_kern, (0, pad_q))
-
-        mask = torch.zeros((P, seqlen_k), dtype=torch.bfloat16, device=q_kern.device)
-        if k_len_int < seqlen_k:
-            mask[:, k_len_int:] = float('-inf')
-
-        num_sections = seqlen_k // ATTN_SEQLEN_MULTIPLE
-
         x = self._call_self_attn_nki(
-            q_kern, k_kern, v_kern, self.identity, mask,
+            q_kern, k_kern, v_kern,
             softmax_scale=self.softmax_scale,
-            num_sections=num_sections,
+            actual_seqlen_k=k_len_int,
         )
-        x = x[:seqlen_q_orig].unsqueeze(0).flatten(2)  # [1, L/SP, dim_local]
+        # Output: [seq_q, n_local, d] → [1, seq_q, dim_local]
+        x = x.unsqueeze(0).flatten(2)
 
         # ── Phase 5: O projection (RowParallel handles all_reduce)
         x = self.o(x)
