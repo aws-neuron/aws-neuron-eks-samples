@@ -1,11 +1,9 @@
-"""Compatibility shim replacing nkilib alpha APIs with SDK-available equivalents.
+"""Compatibility shim replacing nkilib imports with local copies.
 
-Replaces:
-- nkilib.core.utils.kernel_assert.kernel_assert / assert_shape
-- nkilib.core.utils.kernel_helpers.PSUM_BANK_SIZE / div_ceil
-- nkilib.core.utils.modular_allocator.ModularAllocator
-- nkilib.core.utils.tensor_view.TensorView
+The real nkilib source is from private-nki-staging. We copy the actual
+implementations (not stubs) to get correct behavior.
 """
+import nki.language as nl
 
 # ─── kernel_assert ────────────────────────────────────────────────────────────
 def kernel_assert(condition, msg=""):
@@ -22,66 +20,22 @@ PSUM_BANK_SIZE = 2048
 def div_ceil(x, y):
     return (x + y - 1) // y
 
-# ─── ModularAllocator ─────────────────────────────────────────────────────────
-import nki.language as nl
+def sizeinbytes(dtype):
+    if str(dtype) == str(nl.float32):
+        return 4
+    elif str(dtype) == str(nl.bfloat16) or str(dtype) == str(nl.float16) or str(dtype) == str(nl.uint16):
+        return 2
+    elif str(dtype) == str(nl.int8) or str(dtype) == str(nl.uint8):
+        return 1
+    elif str(dtype) == str(nl.int32) or str(dtype) == str(nl.uint32):
+        return 4
+    return 2  # default bf16
 
+def align_to(value, alignment):
+    return ((value + alignment - 1) // alignment) * alignment
 
-class ModularAllocator(nl.NKIObject):
-    """Stub for nkilib ModularAllocator.
+# ─── ModularAllocator (real implementation) ───────────────────────────────────
+from kernels.nkilib_modular_allocator import ModularAllocator
 
-    The alpha SDK uses this for SBUF address management. In our SDK,
-    NKI handles allocation automatically via nl.ndarray. This stub
-    tracks allocations for compatibility but doesn't enforce addresses.
-    """
-    def __init__(self, initial_address=0):
-        self.address = initial_address
-
-    def alloc(self, size, alignment=1):
-        addr = self.address
-        if alignment > 1:
-            addr = (addr + alignment - 1) // alignment * alignment
-        self.address = addr + size
-        return addr
-
-    def alloc_sbuf_tensor(self, shape, dtype, block_dim=None, num_free_tiles=None, align_to=None, name=None):
-        """Allocate SBUF tensor(s). With block_dim, returns indexable list of tiles."""
-        if block_dim is not None and len(block_dim) > 0:
-            num_blocks = block_dim[0]
-            return [nl.ndarray(shape, dtype=dtype, buffer=nl.sbuf) for _ in range(num_blocks)]
-        return nl.ndarray(shape, dtype=dtype, buffer=nl.sbuf)
-
-    def get_current_address(self):
-        return self.address
-
-    def set_current_address(self, addr):
-        self.address = addr
-
-    def reset(self):
-        self.address = 0
-
-
-# ─── TensorView ──────────────────────────────────────────────────────────────
-class TensorView(nl.NKIObject):
-    """Stub for nkilib TensorView.
-
-    The alpha SDK uses this for zero-copy tensor view operations.
-    This stub wraps the tensor and provides pass-through access.
-    """
-    def __init__(self, tensor):
-        self.tensor = tensor
-
-    def select(self, dim, index):
-        # Return a view selecting along dim at index
-        return TensorView(self.tensor)
-
-    def slice(self, dim, start, end):
-        return TensorView(self.tensor)
-
-    def get_view(self):
-        return self.tensor
-
-    def __getitem__(self, key):
-        return self.tensor[key]
-
-    def __setitem__(self, key, value):
-        self.tensor[key] = value
+# ─── TensorView (real implementation) ────────────────────────────────────────
+from kernels.nkilib_tensor_view import TensorView
