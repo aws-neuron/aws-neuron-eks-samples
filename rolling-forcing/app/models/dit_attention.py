@@ -195,10 +195,10 @@ class CausalWanSelfAttention(nn.Module):
 
     def _gather_qkv(self, q_local, k_local, v_local, L):
         def _gather(t):
-            if self.world_size == 1:
+            if self.sp_degree == 1:
                 return t
             out = torch.empty(L, self.dim, dtype=t.dtype, device=t.device)
-            ps.all_gather_into_tensor(out, t, "world")
+            ps.all_gather_into_tensor(out, t, "attn-sp")
             return out
 
         return _gather(q_local), _gather(k_local), _gather(v_local)
@@ -287,8 +287,8 @@ class CausalWanSelfAttention(nn.Module):
         frame_seqlen = h * w
         L = f * h * w
 
-        assert L % self.world_size == 0, (
-            f"L ({L}) must be divisible by world_size ({self.world_size})")
+        assert L % self.sp_degree == 0, (
+            f"L ({L}) must be divisible by sp_degree ({self.sp_degree})")
 
         q_local, k_local, v_local = self._local_qkv_norm(x)
         q_full, k_full, v_full = self._gather_qkv(q_local, k_local, v_local, L)
@@ -446,15 +446,8 @@ class CausalWanSelfAttention(nn.Module):
         return out.unsqueeze(0).flatten(2)
 
     def _output_proj(self, out):
+        # O projection — RowParallelLinear (from shard_model_tp) handles all_reduce internally
         out = self.o(out)
-        if self.tp_degree > 1:
-            seq_len = out.shape[1]
-            out_flat = out.reshape(-1, self.dim)
-            rs_out = torch.empty(
-                seq_len // self.tp_degree, self.dim,
-                dtype=out.dtype, device=out.device)
-            ps.reduce_scatter_tensor(rs_out, out_flat, "attn-tp")
-            out = rs_out.unsqueeze(0)
         return out
 
     def forward_merged(
