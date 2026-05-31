@@ -44,7 +44,10 @@ class ModularAllocator(nl.NKIObject):
         return addr
 
     def alloc_sbuf_tensor(self, shape, dtype, block_dim=None, num_free_tiles=None, align_to=None, name=None):
-        """Allocate an SBUF tensor (stub: just creates nl.ndarray, ignores placement hints)."""
+        """Allocate SBUF tensor(s). With block_dim, returns indexable list of tiles."""
+        if block_dim is not None and len(block_dim) > 0:
+            num_blocks = block_dim[0]
+            return [nl.ndarray(shape, dtype=dtype, buffer=nl.sbuf) for _ in range(num_blocks)]
         return nl.ndarray(shape, dtype=dtype, buffer=nl.sbuf)
 
     def get_current_address(self):
