@@ -22,8 +22,31 @@ def shard_t5_encoder(encoder, tp_rank: int, tp_degree: int):
     """Shard T5Encoder across TP ranks (in-place).
 
     Shards attention Q/K/V (ColumnParallel) and O (RowParallel),
-    and FFN fc (ColumnParallel) and out (RowParallel) in each block.
+    FFN fc (ColumnParallel) and out (RowParallel) in each block,
+    and slices the shared positional embedding to local heads.
     """
+    # Shard the shared positional embedding (outputs [1, num_heads, L, L])
+    # Wrap it to only produce local heads
+    if encoder.pos_embedding is not None:
+        orig_pos_embed = encoder.pos_embedding
+        num_heads = encoder.num_heads
+        heads_per_rank = num_heads // tp_degree
+        h_start = tp_rank * heads_per_rank
+        h_end = h_start + heads_per_rank
+
+        class ShardedPosEmbedding(torch.nn.Module):
+            def __init__(self, orig, start, end):
+                super().__init__()
+                self.orig = orig
+                self.start = start
+                self.end = end
+
+            def forward(self, *args, **kwargs):
+                full = self.orig(*args, **kwargs)
+                return full[:, self.start:self.end]
+
+        encoder.pos_embedding = ShardedPosEmbedding(orig_pos_embed, h_start, h_end)
+
     for block in encoder.blocks:
         # T5SelfAttention has .attn (T5Attention) and .ffn (T5FeedForward)
         attn = block.attn
