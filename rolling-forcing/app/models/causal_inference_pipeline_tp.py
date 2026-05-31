@@ -251,15 +251,24 @@ class CausalInferencePipelineTP(torch.nn.Module):
             [batch_size, max_frames],
             device=noise.device, dtype=torch.float32)
 
-        cache_input = torch.zeros(
+        # Merged forward: combine cache-update (from prev window) + denoising in one call
+        full_frames = nfpb + max_frames
+        padded_input_full = torch.zeros(
+            [batch_size, full_frames, num_channels, height, width],
+            device=noise.device, dtype=noise.dtype)
+        padded_timestep_full = torch.zeros(
+            [batch_size, full_frames],
+            device=noise.device, dtype=torch.float32)
+        padded_sigma_full = torch.zeros(
+            [batch_size, full_frames],
+            device=noise.device, dtype=torch.float32)
+        # Cache-update portion always uses context_noise/sigma
+        padded_timestep_full[:, :nfpb] = self.context_noise
+        padded_sigma_full[:, :nfpb] = self.context_sigma
+
+        prev_denoised_first_block = torch.zeros(
             [batch_size, nfpb, num_channels, height, width],
             device=noise.device, dtype=noise.dtype)
-        cache_timestep = torch.full(
-            [batch_size, nfpb], self.context_noise,
-            device=noise.device, dtype=torch.float32)
-        cache_sigma = torch.full(
-            [batch_size, nfpb], self.context_sigma,
-            device=noise.device, dtype=torch.float32)
 
         block_sigma_list = []
         for step in self.denoising_step_list:
@@ -274,7 +283,7 @@ class CausalInferencePipelineTP(torch.nn.Module):
             diffusion_start = time.perf_counter()
             window_times = []
 
-        # Denoising loop with rolling forcing (all ranks in lockstep)
+        # Denoising loop with forward_merged pattern
         for window_index in range(window_num):
             if profile:
                 window_start = time.perf_counter()
@@ -290,6 +299,7 @@ class CausalInferencePipelineTP(torch.nn.Module):
                 print(f"[DiT-TP] Window {window_index}/{window_num} | "
                       f"frames {current_start_frame}-{current_end_frame-1}", flush=True)
 
+            # Build denoising input (same as before)
             padded_input.copy_(
                 noisy_cache[:, current_start_frame:current_start_frame + max_frames])
 
@@ -303,26 +313,54 @@ class CausalInferencePipelineTP(torch.nn.Module):
 
             num_valid_frames = current_num_frames
 
-            # DiT forward (TP-sharded, all-reduce inside model)
-            _, denoised_pred = self.generator(
-                noisy_image_or_video=padded_input,
-                conditional_dict=conditional_dict,
-                timestep=padded_timestep,
-                kv_cache=self.kv_cache_clean,
-                crossattn_cache=self.crossattn_cache,
-                current_start=current_start_frame * self.frame_seq_length,
-                num_valid_frames=num_valid_frames,
-                shared_buffers=(self.shared_buffer_k, self.shared_buffer_v),
-                sigma=padded_sigma,
-            )
+            if window_index >= 1:
+                # Merged forward: [cache_update_frames | denoising_frames]
+                prev_start_block = window_start_blocks[window_index - 1]
+                cache_update_start = prev_start_block * nfpb * self.frame_seq_length
 
-            # Copy denoised prediction to output, clamping to avoid overflow
+                padded_input_full[:, :nfpb].copy_(prev_denoised_first_block)
+                padded_input_full[:, nfpb:].copy_(padded_input)
+                padded_timestep_full[:, nfpb:].copy_(padded_timestep)
+                padded_sigma_full[:, nfpb:].copy_(padded_sigma)
+
+                _, pred_full = self.generator(
+                    noisy_image_or_video=padded_input_full,
+                    conditional_dict=conditional_dict,
+                    timestep=padded_timestep_full,
+                    kv_cache=self.kv_cache_clean,
+                    crossattn_cache=self.crossattn_cache,
+                    current_start=current_start_frame * self.frame_seq_length,
+                    num_valid_frames=num_valid_frames,
+                    shared_buffers=(self.shared_buffer_k, self.shared_buffer_v),
+                    sigma=padded_sigma_full,
+                    cache_update_start=cache_update_start,
+                    nfpb_cu=nfpb,
+                )
+                denoised_pred = pred_full[:, nfpb:]
+            else:
+                # First window: normal forward (no cache-update to merge)
+                _, denoised_pred = self.generator(
+                    noisy_image_or_video=padded_input,
+                    conditional_dict=conditional_dict,
+                    timestep=padded_timestep,
+                    kv_cache=self.kv_cache_clean,
+                    crossattn_cache=self.crossattn_cache,
+                    current_start=current_start_frame * self.frame_seq_length,
+                    num_valid_frames=num_valid_frames,
+                    shared_buffers=(self.shared_buffer_k, self.shared_buffer_v),
+                    sigma=padded_sigma,
+                )
+
+            # Save first block for next window's cache-update
+            prev_denoised_first_block.copy_(denoised_pred[:, :nfpb])
+
+            # Copy denoised prediction to output
             copy_end = min(current_start_frame + max_frames, output.shape[1])
             copy_len = copy_end - current_start_frame
             output[:, current_start_frame:copy_end].copy_(
                 denoised_pred[:, :copy_len])
 
-            # Re-noising (local computation, identical on all ranks due to same RNG seed)
+            # Re-noising (same as before)
             num_blks = end_block - start_block + 1
             step_base = (num_blks - 1) if (
                 start_block == 0 and num_blks < nds) else (nds - 1)
@@ -334,7 +372,6 @@ class CausalInferencePipelineTP(torch.nn.Module):
                 if step_index == nds - 1:
                     continue
 
-                # Noise sized for max_frames (matching denoised_pred shape)
                 full_noise = torch.randn(
                     batch_size * max_frames, *denoised_pred.shape[2:],
                     dtype=denoised_pred.dtype).to(noise.device)
@@ -351,26 +388,27 @@ class CausalInferencePipelineTP(torch.nn.Module):
                     self._add_noise(block_pred, block_noise, block_sigma) \
                     .unflatten(0, (batch_size, nfpb))
 
-            # Cache-update call
-            cache_input.copy_(denoised_pred[:, :nfpb])
-            self.generator(
-                noisy_image_or_video=cache_input,
-                conditional_dict=conditional_dict,
-                timestep=cache_timestep,
-                kv_cache=self.kv_cache_clean,
-                crossattn_cache=self.crossattn_cache,
-                current_start=current_start_frame * self.frame_seq_length,
-                updating_cache=True,
-                num_valid_frames=nfpb,
-                shared_buffers=(self.shared_buffer_k, self.shared_buffer_v),
-                sigma=cache_sigma,
-            )
+        # Final cache-update for the last window (no next window to merge with)
+        cache_input = prev_denoised_first_block
+        cache_timestep = torch.full([batch_size, nfpb], self.context_noise,
+                                    device=noise.device, dtype=torch.float32)
+        cache_sigma = torch.full([batch_size, nfpb], self.context_sigma,
+                                 device=noise.device, dtype=torch.float32)
+        self.generator(
+            noisy_image_or_video=cache_input,
+            conditional_dict=conditional_dict,
+            timestep=cache_timestep,
+            kv_cache=self.kv_cache_clean,
+            crossattn_cache=self.crossattn_cache,
+            current_start=window_start_blocks[-1] * nfpb * self.frame_seq_length,
+            updating_cache=True,
+            num_valid_frames=nfpb,
+            shared_buffers=(self.shared_buffer_k, self.shared_buffer_v),
+            sigma=cache_sigma,
+        )
 
-            if profile:
-                wt = time.perf_counter() - window_start
-                window_times.append(wt)
-                if self.tp_rank == 0:
-                    print(f"  Window {window_index}: {wt*1000:.2f} ms", flush=True)
+        if profile:
+            diffusion_end = time.perf_counter()
 
         if profile:
             diffusion_end = time.perf_counter()

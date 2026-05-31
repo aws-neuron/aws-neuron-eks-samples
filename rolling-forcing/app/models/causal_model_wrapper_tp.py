@@ -105,11 +105,17 @@ class WanDiffusionWrapperTP(torch.nn.Module):
         updating_cache: Optional[bool] = False,
         num_valid_frames: Optional[int] = None,
         shared_buffers=None,
-        sigma: Optional[torch.Tensor] = None
+        sigma: Optional[torch.Tensor] = None,
+        cache_update_start: Optional[int] = None,
+        nfpb_cu: Optional[int] = None,
     ) -> torch.Tensor:
         """Forward pass — same interface as non-TP wrapper.
 
         All ranks execute in lockstep. TP communication is handled internally.
+
+        When cache_update_start is provided (merged mode):
+          - First nfpb_cu frames are cache-update (updating_cache=True)
+          - Remaining frames are denoising (updating_cache=False)
         """
         prompt_embeds = conditional_dict["prompt_embeds"]
         assert kv_cache is not None
@@ -126,7 +132,9 @@ class WanDiffusionWrapperTP(torch.nn.Module):
             cache_start=cache_start,
             updating_cache=updating_cache,
             num_valid_frames=num_valid_frames,
-            shared_buffers=shared_buffers
+            shared_buffers=shared_buffers,
+            cache_update_start=cache_update_start,
+            nfpb_cu=nfpb_cu,
         )
 
         flow_pred = flow_pred.permute(0, 2, 1, 3, 4)

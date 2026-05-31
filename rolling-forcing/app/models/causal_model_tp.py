@@ -373,8 +373,15 @@ class CausalWanModelTP(ModelMixin, ConfigMixin):
         cache_start: int = 0,
         num_valid_frames: int = None,
         shared_buffers=None,
+        cache_update_start: int = None,
+        nfpb_cu: int = None,
     ):
         """Run the DiT forward pass with TP.
+
+        When cache_update_start is provided (merged mode), x contains
+        [cu_frames | dn_frames]. Process all through embeddings/blocks,
+        but self_attn handles cache-update for first nfpb_cu frames
+        and denoising for the rest.
 
         All ranks execute the same code in lockstep. Communication
         (all-reduce) happens inside RowParallelLinear layers.
