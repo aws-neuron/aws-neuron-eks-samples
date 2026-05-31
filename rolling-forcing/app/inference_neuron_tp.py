@@ -250,6 +250,11 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
         block.cross_attn.v = _compile(block.cross_attn.v)
         block.ffn[0] = _compile(block.ffn[0])
         block.ffn[1] = _compile(block.ffn[1])
+        # RowParallel: compile without fullgraph (allows graph break at all_reduce)
+        _compile_row = lambda m: torch.compile(m, backend='neuron', dynamic=False)
+        block.self_attn.o = _compile_row(block.self_attn.o)
+        block.cross_attn.o = _compile_row(block.cross_attn.o)
+        block.ffn[2] = _compile_row(block.ffn[2])
 
     if rank == 0:
         logger.info(f"DiT 1.3B TP-sharded on neuron (rank {rank}, {TP_DEGREE} ranks total)")
