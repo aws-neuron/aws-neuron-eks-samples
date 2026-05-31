@@ -25,13 +25,13 @@ height: 480
 width: 832
 num_frames: 81
 
-# Full resolution: 60x104 latent -> 480x832 video
-# frame_seq_length = (60*104)//4 = 1560
-# L divisible by 8 for SP=2 with TP=4 (world_size=8)
+# Medium resolution: 44x78 latent -> ~352x624 video
+# frame_seq_length = (44*78)//4 = 858
+# L divisible by 2 for SP=2 (AllGather across attn-sp group of 2 ranks)
 image_or_video_shape:
 - 1
 - 21
 - 16
-- 60
-- 104
+- 44
+- 78
 num_frame_per_block: 3
