@@ -147,9 +147,9 @@ class CausalWanAttentionBlockTP(nn.Module):
         # attention (will be sharded by shard_model_tp)
         sp_degree = ps.get_world_size("attn-sp") if ps.is_registered("attn-sp") else 1
         if sp_degree > 1:
-            from models.self_attn_sp import CausalWanSelfAttentionSP
-            self.self_attn = CausalWanSelfAttentionSP(
-                dim, num_heads, local_attn_size, sink_size, qk_norm, eps, layer_idx, frame_length)
+            from models.dit_attention import CausalWanSelfAttention as CausalWanSelfAttentionNST
+            self.self_attn = CausalWanSelfAttentionNST(
+                dim, num_heads, local_attn_size, sink_size, qk_norm, eps, layer_idx)
         else:
             self.self_attn = CausalWanSelfAttention(
                 dim, num_heads, local_attn_size, sink_size, qk_norm, eps, layer_idx, frame_length)
