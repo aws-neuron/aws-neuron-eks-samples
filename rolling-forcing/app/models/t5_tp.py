@@ -25,27 +25,26 @@ def shard_t5_encoder(encoder, tp_rank: int, tp_degree: int):
     FFN fc (ColumnParallel) and out (RowParallel) in each block,
     and slices the shared positional embedding to local heads.
     """
-    # Shard the shared positional embedding (outputs [1, num_heads, L, L])
-    # Wrap it to only produce local heads
+    # Shard the shared positional embedding weight directly
+    # T5RelativeEmbedding has embedding.weight [num_heads, num_buckets]
+    # Slice to local heads
     if encoder.pos_embedding is not None:
-        orig_pos_embed = encoder.pos_embedding
         num_heads = encoder.num_heads
         heads_per_rank = num_heads // tp_degree
         h_start = tp_rank * heads_per_rank
         h_end = h_start + heads_per_rank
 
-        class ShardedPosEmbedding(torch.nn.Module):
-            def __init__(self, orig, start, end):
-                super().__init__()
-                self.orig = orig
-                self.start = start
-                self.end = end
+        pos_emb = encoder.pos_embedding
+        # T5RelativeEmbedding.embedding is nn.Embedding(num_buckets, num_heads)
+        # Output is [1, num_heads, L, L] — we need [1, heads_per_rank, L, L]
+        # Slice the embedding weight: [num_buckets, num_heads] → [num_buckets, heads_per_rank]
+        old_weight = pos_emb.embedding.weight.data  # [num_buckets, num_heads]
+        new_embedding = nn.Embedding(old_weight.shape[0], heads_per_rank)
+        new_embedding.weight = nn.Parameter(old_weight[:, h_start:h_end].contiguous())
+        pos_emb.embedding = new_embedding
+        pos_emb.num_heads = heads_per_rank
 
-            def forward(self, *args, **kwargs):
-                full = self.orig(*args, **kwargs)
-                return full[:, self.start:self.end]
-
-        encoder.pos_embedding = ShardedPosEmbedding(orig_pos_embed, h_start, h_end)
+    encoder.num_heads = encoder.num_heads // tp_degree
 
     for block in encoder.blocks:
         # T5SelfAttention has .attn (T5Attention) and .ffn (T5FeedForward)
