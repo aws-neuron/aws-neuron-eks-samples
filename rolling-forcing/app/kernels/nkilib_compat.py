@@ -23,7 +23,10 @@ def div_ceil(x, y):
     return (x + y - 1) // y
 
 # ─── ModularAllocator ─────────────────────────────────────────────────────────
-class ModularAllocator:
+import nki.language as nl
+
+
+class ModularAllocator(nl.NKIObject):
     """Stub for nkilib ModularAllocator.
 
     The alpha SDK uses this for SBUF address management. In our SDK,
@@ -40,11 +43,22 @@ class ModularAllocator:
         self.address = addr + size
         return addr
 
+    def alloc_sbuf_tensor(self, shape, dtype):
+        """Allocate an SBUF tensor (stub: just creates nl.ndarray)."""
+        return nl.ndarray(shape, dtype=dtype, buffer=nl.sbuf)
+
+    def get_current_address(self):
+        return self.address
+
+    def set_current_address(self, addr):
+        self.address = addr
+
     def reset(self):
         self.address = 0
 
+
 # ─── TensorView ──────────────────────────────────────────────────────────────
-class TensorView:
+class TensorView(nl.NKIObject):
     """Stub for nkilib TensorView.
 
     The alpha SDK uses this for zero-copy tensor view operations.
@@ -52,6 +66,16 @@ class TensorView:
     """
     def __init__(self, tensor):
         self.tensor = tensor
+
+    def select(self, dim, index):
+        # Return a view selecting along dim at index
+        return TensorView(self.tensor)
+
+    def slice(self, dim, start, end):
+        return TensorView(self.tensor)
+
+    def get_view(self):
+        return self.tensor
 
     def __getitem__(self, key):
         return self.tensor[key]
