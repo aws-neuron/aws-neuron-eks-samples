@@ -243,20 +243,15 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
     dit_model.head = _compile(dit_model.head)
 
     for i, block in enumerate(dit_model.blocks):
-        # All linear sub-modules compiled (cache_size_limit=128 handles shape variants)
-        # all_reduce stays eager inside RowParallel.forward()
+        # ColumnParallel layers only (no all_reduce) — safe with fullgraph=True
         block.self_attn.q = _compile(block.self_attn.q)
         block.self_attn.k = _compile(block.self_attn.k)
         block.self_attn.v = _compile(block.self_attn.v)
-        block.self_attn.o.linear = _compile(block.self_attn.o.linear)
         block.cross_attn.q = _compile(block.cross_attn.q)
         block.cross_attn.k = _compile(block.cross_attn.k)
         block.cross_attn.v = _compile(block.cross_attn.v)
-        block.cross_attn.o.linear = _compile(block.cross_attn.o.linear)
-        # FFN: fc1 (ColumnParallel) + GELU + fc2.linear (RowParallel inner)
         block.ffn[0] = _compile(block.ffn[0])
         block.ffn[1] = _compile(block.ffn[1])
-        block.ffn[2].linear = _compile(block.ffn[2].linear)
 
     if rank == 0:
         logger.info(f"DiT 1.3B TP-sharded on neuron (rank {rank}, {TP_DEGREE} ranks total)")
