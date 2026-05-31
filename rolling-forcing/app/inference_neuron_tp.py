@@ -434,16 +434,12 @@ def worker_loop(state: PipelineState):
             dist.broadcast(ids_device, src=0)
             dist.broadcast(mask_device, src=0)
 
-            if rank == T5_RANK:
-                seq_len = mask_device.gt(0).sum(dim=1).long()
-                with torch.no_grad():
-                    prompt_embeds = state.text_encoder(ids_device, mask_device)
-                prompt_embeds[0, seq_len[0]:] = 0.0
-                prompt_embeds = prompt_embeds.to(torch.bfloat16).contiguous()
-            else:
-                prompt_embeds = torch.zeros(1, 512, 4096, dtype=torch.bfloat16, device=NEURON_DEVICE)
-
-            dist.broadcast(prompt_embeds, src=T5_RANK)
+            # All ranks run T5 (TP-sharded, all_reduce inside)
+            seq_len = mask_device.gt(0).sum(dim=1).long()
+            with torch.no_grad():
+                prompt_embeds = state.text_encoder(ids_device, mask_device)
+            prompt_embeds[0, seq_len[0]:] = 0.0
+            prompt_embeds = prompt_embeds.to(torch.bfloat16).contiguous()
 
             # Generate noise (deterministic from seed)
             noise = torch.randn(
