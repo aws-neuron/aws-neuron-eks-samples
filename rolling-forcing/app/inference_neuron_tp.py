@@ -172,26 +172,33 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
     if rank == 0:
         logger.info(f"Spatial: {state.latent_h}x{state.latent_w}, frame_seq_length={state.frame_seq_length}")
 
-    # ── Load T5 on T5_RANK (separate rank from VAE) ──────────────────────────
+    # ── Load T5 on all ranks (TP-sharded for memory efficiency) ────────────────
     from wan.modules.tokenizers import HuggingfaceTokenizer
 
-    if rank == T5_RANK:
-        logger.info(f"Loading T5 encoder (rank {T5_RANK}, on Neuron with torch.compile)...")
-        from wan.modules.t5 import umt5_xxl
+    tp_degree_t5 = world_size  # shard T5 across ALL ranks
+    if rank == 0:
+        logger.info(f"Loading T5 encoder (TP={tp_degree_t5} across all ranks)...")
+    from wan.modules.t5 import umt5_xxl
 
-        state.text_encoder = umt5_xxl(
-            encoder_only=True, return_tokenizer=False,
-            dtype=torch.bfloat16, device=torch.device('cpu')
-        ).eval().requires_grad_(False)
+    state.text_encoder = umt5_xxl(
+        encoder_only=True, return_tokenizer=False,
+        dtype=torch.bfloat16, device=torch.device('cpu')
+    ).eval().requires_grad_(False)
 
-        weights_path = os.path.join(MODEL_PATH, "models_t5_umt5-xxl-enc-bf16.pth")
-        state.text_encoder.load_state_dict(
-            torch.load(weights_path, map_location='cpu', weights_only=False)
-        )
-        # Move T5 to Neuron and compile
-        state.text_encoder = state.text_encoder.to(NEURON_DEVICE)
-        state.text_encoder = torch.compile(state.text_encoder, backend='neuron', dynamic=False)
-        logger.info(f"T5 loaded on Neuron with torch.compile (rank {T5_RANK})")
+    weights_path = os.path.join(MODEL_PATH, "models_t5_umt5-xxl-enc-bf16.pth")
+    state.text_encoder.load_state_dict(
+        torch.load(weights_path, map_location='cpu', weights_only=False)
+    )
+
+    # Shard T5 across all ranks
+    from models.t5_tp import shard_t5_encoder
+    shard_t5_encoder(state.text_encoder, tp_rank=rank, tp_degree=tp_degree_t5)
+
+    # Move to Neuron and compile
+    state.text_encoder = state.text_encoder.to(NEURON_DEVICE)
+    state.text_encoder = torch.compile(state.text_encoder, backend='neuron', dynamic=False)
+    if rank == 0:
+        logger.info(f"T5 loaded and TP-sharded on Neuron (TP={tp_degree_t5})")
 
     # All ranks need the tokenizer (lightweight, CPU-only)
     tokenizer_path = os.path.join(MODEL_PATH, "google/umt5-xxl/")
@@ -350,20 +357,13 @@ def encode_prompt_distributed(state: PipelineState, prompt: str) -> torch.Tensor
     dist.broadcast(ids_device, src=0)
     dist.broadcast(mask_device, src=0)
 
-    # Step 2: Rank T5_RANK encodes with T5 on Neuron
-    if rank == T5_RANK:
-        seq_len = mask_device.gt(0).sum(dim=1).long()
-        with torch.no_grad():
-            prompt_embeds = state.text_encoder(ids_device, mask_device)
-        # Zero-out padding
-        prompt_embeds[0, seq_len[0]:] = 0.0
-        prompt_embeds = prompt_embeds.to(torch.bfloat16).contiguous()
-    else:
-        # Allocate buffer to receive embeddings: [1, 512, 4096] for umt5-xxl
-        prompt_embeds = torch.zeros(1, 512, 4096, dtype=torch.bfloat16, device=NEURON_DEVICE)
-
-    # Step 3: Broadcast embeddings from T5_RANK to all ranks
-    dist.broadcast(prompt_embeds, src=T5_RANK)
+    # Step 2: All ranks run T5 (TP-sharded, all_reduce inside RowParallel)
+    seq_len = mask_device.gt(0).sum(dim=1).long()
+    with torch.no_grad():
+        prompt_embeds = state.text_encoder(ids_device, mask_device)
+    # Zero-out padding
+    prompt_embeds[0, seq_len[0]:] = 0.0
+    prompt_embeds = prompt_embeds.to(torch.bfloat16).contiguous()
 
     return prompt_embeds
 
