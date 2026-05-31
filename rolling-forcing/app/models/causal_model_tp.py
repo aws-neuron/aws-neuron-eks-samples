@@ -187,6 +187,8 @@ class CausalWanAttentionBlockTP(nn.Module):
         shared_buffers=None,
         current_start_frame_t=None,
         sp_mode=False,
+        cache_update_start=None,
+        nfpb_cu=None,
     ):
         if sp_mode:
             # SP mode: e is per-token [B, shard_len, 6, C], x is [B, shard_len, C]
@@ -203,6 +205,8 @@ class CausalWanAttentionBlockTP(nn.Module):
                 num_valid_frames=num_valid_frames,
                 shared_buffers=shared_buffers,
                 current_start_frame_t=current_start_frame_t,
+                cache_update_start=cache_update_start,
+                nfpb_cu=nfpb_cu,
             )
             x = x + y * e2
 
@@ -465,6 +469,8 @@ class CausalWanModelTP(ModelMixin, ConfigMixin):
             num_valid_frames=num_valid_frames,
             shared_buffers=shared_buffers,
             sp_mode=sp_mode,
+            cache_update_start=cache_update_start,
+            nfpb_cu=nfpb_cu,
         )
 
         if not sp_mode:

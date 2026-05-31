@@ -147,12 +147,25 @@ class CausalWanSelfAttentionSP(nn.Module):
         updating_cache=False,
         num_valid_frames=None,
         shared_buffers=None,
-        current_start_frame_t=None
+        current_start_frame_t=None,
+        cache_update_start=None,
+        nfpb_cu=None,
     ):
         """SP-aware self-attention.
 
         x is [1, L/SP, dim] — already sequence-sharded by the model.
+
+        In merged mode (cache_update_start is not None):
+        x contains [cu_frames | dn_frames]. Process cu with updating_cache=True
+        at cache_update_start, then dn with updating_cache=False at current_start.
         """
+        # Merged mode: split and process separately, concatenate output
+        if cache_update_start is not None and nfpb_cu is not None:
+            return self._forward_merged(
+                x, grid_sizes, freqs_cos, freqs_sin, kv_cache,
+                current_start, cache_update_start, nfpb_cu,
+                num_valid_frames, shared_buffers, current_start_frame_t)
+
         b = 1
         s_local = x.shape[1]  # L / SP
         n_local = self.heads_per_shard
@@ -332,3 +345,54 @@ class CausalWanSelfAttentionSP(nn.Module):
         # ── Phase 5: O projection (RowParallel handles all_reduce)
         x = self.o(x)
         return x  # [1, L/SP, dim]
+
+    def _forward_merged(self, x, grid_sizes, freqs_cos, freqs_sin, kv_cache,
+                        current_start, cache_update_start, nfpb_cu,
+                        num_valid_frames, shared_buffers, current_start_frame_t):
+        """Merged forward: process [cu_frames | dn_frames] in one call.
+
+        Splits input, runs cache-update for cu portion then denoising for dn.
+        Saves embedding/FFN/cross-attn overhead (processed at block level on full input).
+        Self-attention runs twice (cu + dn) with different cache parameters.
+        """
+        f, h, w = grid_sizes
+        frame_seqlen = h * w
+
+        # Split at nfpb_cu frame boundary (in SP-sharded token space)
+        cu_tokens = nfpb_cu * frame_seqlen
+        dn_frames = f - nfpb_cu
+        cu_tokens_sp = cu_tokens // self.sp_degree
+        dn_tokens_sp = x.shape[1] - cu_tokens_sp
+
+        x_cu = x[:, :cu_tokens_sp]
+        x_dn = x[:, cu_tokens_sp:]
+
+        cu_grid = (nfpb_cu, h, w)
+        dn_grid = (dn_frames, h, w)
+
+        cu_start_frame_t = torch.tensor(
+            cache_update_start // frame_seqlen, dtype=torch.int64, device=x.device)
+
+        # Process cache-update portion
+        y_cu = self.forward(
+            x_cu, cu_grid, freqs_cos, freqs_sin,
+            kv_cache=kv_cache,
+            current_start=cache_update_start,
+            updating_cache=True,
+            num_valid_frames=nfpb_cu,
+            shared_buffers=shared_buffers,
+            current_start_frame_t=cu_start_frame_t,
+        )
+
+        # Process denoising portion
+        y_dn = self.forward(
+            x_dn, dn_grid, freqs_cos, freqs_sin,
+            kv_cache=kv_cache,
+            current_start=current_start,
+            updating_cache=False,
+            num_valid_frames=num_valid_frames,
+            shared_buffers=shared_buffers,
+            current_start_frame_t=current_start_frame_t,
+        )
+
+        return torch.cat([y_cu, y_dn], dim=1)
