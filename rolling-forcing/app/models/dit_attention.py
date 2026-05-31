@@ -31,8 +31,8 @@ from models.layers import (
 
 
 def _compile(mod_or_fn):
-    """Sub-module compilation — matches science team pattern."""
-    return torch.compile(mod_or_fn, backend='neuron', dynamic=False, fullgraph=True)
+    """No-op during construction — compilation done after weight loading in inference_neuron_tp.py."""
+    return mod_or_fn
 
 
 def build_rope_grids(freqs_cos, freqs_sin, sign_pattern, start_frame,
@@ -156,10 +156,7 @@ class CausalWanSelfAttention(nn.Module):
         self.q = _compile(nn.Linear(dim, dim))
         self.k = _compile(nn.Linear(dim, dim))
         self.v = _compile(nn.Linear(dim, dim))
-        if tp_degree > 1:
-            self.o = _compile(nn.Linear(dim // tp_degree, dim))
-        else:
-            self.o = _compile(nn.Linear(dim, dim))
+        self.o = _compile(nn.Linear(dim, dim))
         self.norm_q = WanRMSNorm(dim, eps=eps)
         self.norm_k = WanRMSNorm(dim, eps=eps)
 
