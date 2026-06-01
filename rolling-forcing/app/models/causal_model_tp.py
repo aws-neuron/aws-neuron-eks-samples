@@ -189,6 +189,7 @@ class CausalWanAttentionBlockTP(nn.Module):
         sp_mode=False,
         cache_update_start=None,
         nfpb_cu=None,
+        cu_shared_buffers=None,
     ):
         if sp_mode:
             # SP mode: e is per-token [B, shard_len, 6, C], x is [B, shard_len, C]
@@ -196,18 +197,23 @@ class CausalWanAttentionBlockTP(nn.Module):
             e0, e1, e2, e3, e4, e5 = e[:, :, 0], e[:, :, 1], e[:, :, 2], e[:, :, 3], e[:, :, 4], e[:, :, 5]
             ones = torch.ones_like(e1)
 
-            # self-attention
-            y = self.self_attn(
-                self.norm1(x) * (ones + e1) + e0,
-                grid_sizes, freqs_cos, freqs_sin,
-                kv_cache, current_start, cache_start,
-                updating_cache=updating_cache,
-                num_valid_frames=num_valid_frames,
-                shared_buffers=shared_buffers,
-                current_start_frame_t=current_start_frame_t,
-                cache_update_start=cache_update_start,
-                nfpb_cu=nfpb_cu,
-            )
+            # self-attention (merged or normal)
+            x_normed = self.norm1(x) * (ones + e1) + e0
+            if cache_update_start is not None and cu_shared_buffers is not None:
+                y = self.self_attn.forward_merged(
+                    x_normed, grid_sizes, freqs_cos, freqs_sin,
+                    kv_cache, cache_update_start, current_start,
+                    cu_shared_buffers, shared_buffers,
+                    num_valid_frames, nfpb_cu)
+            else:
+                y = self.self_attn(
+                    x_normed, grid_sizes, freqs_cos, freqs_sin,
+                    kv_cache, current_start, cache_start,
+                    updating_cache=updating_cache,
+                    num_valid_frames=num_valid_frames,
+                    shared_buffers=shared_buffers,
+                    current_start_frame_t=current_start_frame_t,
+                )
             x = x + y * e2
 
             # cross-attention
@@ -379,6 +385,7 @@ class CausalWanModelTP(ModelMixin, ConfigMixin):
         shared_buffers=None,
         cache_update_start: int = None,
         nfpb_cu: int = None,
+        cu_shared_buffers=None,
     ):
         """Run the DiT forward pass with TP.
 
@@ -471,6 +478,7 @@ class CausalWanModelTP(ModelMixin, ConfigMixin):
             sp_mode=sp_mode,
             cache_update_start=cache_update_start,
             nfpb_cu=nfpb_cu,
+            cu_shared_buffers=cu_shared_buffers,
         )
 
         if not sp_mode:

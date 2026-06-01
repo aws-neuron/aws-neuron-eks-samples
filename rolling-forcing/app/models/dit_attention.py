@@ -466,29 +466,22 @@ class CausalWanSelfAttention(nn.Module):
 
         sp = self.sp_degree
         tp = self.tp_degree
-        N = self.world_size
-        assert L_cu % N == 0, f"L_cu ({L_cu}) must be divisible by world_size ({N})"
-        assert L_dn % N == 0, f"L_dn ({L_dn}) must be divisible by world_size ({N})"
+        assert L_cu % sp == 0, f"L_cu ({L_cu}) must be divisible by sp_degree ({sp})"
+        assert L_dn % sp == 0, f"L_dn ({L_dn}) must be divisible by sp_degree ({sp})"
         L_cu_sp = L_cu // sp
         L_dn_sp = L_dn // sp
-        L_cu_N = L_cu // N
-        L_dn_N = L_dn // N
-        L_full_N = L_full // N
 
         q_local, k_local, v_local = self._local_qkv_norm(x)
         q_full, k_full, v_full = self._gather_qkv(
             q_local, k_local, v_local, L_full)
 
-        n = self.num_heads
         d = self.head_dim
         n_local = self.heads_per_shard
-        h_start = self.tp_rank * n_local
-        h_end = h_start + n_local
 
         v_full_h = self._slice_heads_2d(v_full).contiguous()
 
-        q_full_4d = q_full.view(L_full, n, d)
-        k_full_4d = k_full.view(L_full, n, d)
+        q_full_4d = q_full.view(L_full, n_local, d)
+        k_full_4d = k_full.view(L_full, n_local, d)
         q_cu = q_full_4d[:L_cu].unsqueeze(0)
         q_dn = q_full_4d[L_cu:].unsqueeze(0)
         k_cu_full = k_full_4d[:L_cu].unsqueeze(0)
@@ -504,33 +497,29 @@ class CausalWanSelfAttention(nn.Module):
         rq_cu_full = self._nki_rope_apply(
             q_cu, grid_cu, freqs_cos, freqs_sin,
             start_frame=cu_sf_t, rope_grid_cache=rope_grid_cache,
-            start_frame_int=cu_sf_int,
-            head_start=h_start, head_end=h_end)
+            start_frame_int=cu_sf_int)
         rk_cu = self._nki_rope_apply(
             k_cu_full, grid_cu, freqs_cos, freqs_sin,
             start_frame=cu_sf_t, rope_grid_cache=rope_grid_cache,
-            start_frame_int=cu_sf_int,
-            head_start=h_start, head_end=h_end)
+            start_frame_int=cu_sf_int)
         rq_dn_full = self._nki_rope_apply(
             q_dn, grid_dn, freqs_cos, freqs_sin,
             start_frame=dn_sf_t, rope_grid_cache=rope_grid_cache,
-            start_frame_int=dn_sf_int,
-            head_start=h_start, head_end=h_end)
+            start_frame_int=dn_sf_int)
         rk_dn = self._nki_rope_apply(
             k_dn_full, grid_dn, freqs_cos, freqs_sin,
             start_frame=dn_sf_t, rope_grid_cache=rope_grid_cache,
-            start_frame_int=dn_sf_int,
-            head_start=h_start, head_end=h_end)
+            start_frame_int=dn_sf_int)
 
         if self._will_anchor_write(kv_cache, cache_update_start):
-            k_cu = self._slice_heads_2d(k_full[:L_cu]).contiguous().unsqueeze(0)
+            k_cu = k_full[:L_cu].view(L_cu, n_local, d).unsqueeze(0)
         else:
             k_cu = None
         le_cu, ls_cu = self._cache_write(
             k_cu, v_cu, rk_cu, kv_cache, cache_update_start, cu_shared_buffers)
 
         if self._will_anchor_write(kv_cache, current_start):
-            k_dn = self._slice_heads_2d(k_full[L_cu:]).contiguous().unsqueeze(0)
+            k_dn = k_full[L_cu:].view(L_dn, n_local, d).unsqueeze(0)
         else:
             k_dn = None
         le_dn, ls_dn = self._cache_write(
@@ -552,28 +541,9 @@ class CausalWanSelfAttention(nn.Module):
         y_cu = self._attend(q_cu_sp, cu_shared_buffers, klen_cu)
         y_dn = self._attend(q_dn_sp, dn_shared_buffers, klen_dn)
 
-        y = self.o(torch.cat([y_cu, y_dn], dim=1))
-
-        if tp > 1:
-            y = y.reshape(L_full // sp, self.dim)
-            y_cu_part = y[:L_cu_sp].reshape(tp, L_cu_N, self.dim)
-            y_dn_part = y[L_cu_sp:].reshape(tp, L_dn_N, self.dim)
-            rearranged = torch.cat([y_cu_part, y_dn_part], dim=1).reshape(-1, self.dim)
-            rs_out = torch.empty(L_full_N, self.dim, dtype=y.dtype, device=y.device)
-            ps.reduce_scatter_tensor(rs_out, rearranged, "attn-tp")
-            cu_dn_sep = rs_out
-        else:
-            cu_dn_sep = y.reshape(L_full_N, self.dim)
-
-        if N == 1:
-            return cu_dn_sep.unsqueeze(0)
-
-        gathered = torch.empty(N * L_full_N, self.dim, dtype=cu_dn_sep.dtype, device=cu_dn_sep.device)
-        ps.all_gather_into_tensor(gathered, cu_dn_sep, "world")
-        full = restore_layout(gathered, N=N)
-        rank_world = ps.get_rank("world")
-        out = full[rank_world * L_full_N:(rank_world + 1) * L_full_N]
-        return out.unsqueeze(0)
+        # O projection — RowParallelLinear handles all_reduce internally
+        out = self.o(torch.cat([y_cu, y_dn], dim=1))
+        return out
 
     def forward(
         self,

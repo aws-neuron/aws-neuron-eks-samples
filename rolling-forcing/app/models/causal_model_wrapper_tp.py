@@ -108,6 +108,7 @@ class WanDiffusionWrapperTP(torch.nn.Module):
         sigma: Optional[torch.Tensor] = None,
         cache_update_start: Optional[int] = None,
         nfpb_cu: Optional[int] = None,
+        cu_shared_buffers=None,
     ) -> torch.Tensor:
         """Forward pass — same interface as non-TP wrapper.
 
@@ -135,6 +136,7 @@ class WanDiffusionWrapperTP(torch.nn.Module):
             shared_buffers=shared_buffers,
             cache_update_start=cache_update_start,
             nfpb_cu=nfpb_cu,
+            cu_shared_buffers=cu_shared_buffers,
         )
 
         flow_pred = flow_pred.permute(0, 2, 1, 3, 4)

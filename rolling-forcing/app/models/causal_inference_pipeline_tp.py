@@ -335,6 +335,7 @@ class CausalInferencePipelineTP(torch.nn.Module):
                     sigma=padded_sigma_full,
                     cache_update_start=cache_update_start,
                     nfpb_cu=nfpb,
+                    cu_shared_buffers=(self.cu_shared_buffer_k, self.cu_shared_buffer_v),
                 )
                 denoised_pred = pred_full[:, nfpb:]
             else:
@@ -699,6 +700,15 @@ class CausalInferencePipelineTP(torch.nn.Module):
              self._num_heads_per_rank, self._head_dim],
             dtype=dtype, device=device)
         self.shared_buffer_v = torch.zeros(
+            [batch_size, max_buffer_size,
+             self._num_heads_per_rank, self._head_dim],
+            dtype=dtype, device=device)
+        # Second buffer set for cache-update in forward_merged
+        self.cu_shared_buffer_k = torch.zeros(
+            [batch_size, max_buffer_size,
+             self._num_heads_per_rank, self._head_dim],
+            dtype=dtype, device=device)
+        self.cu_shared_buffer_v = torch.zeros(
             [batch_size, max_buffer_size,
              self._num_heads_per_rank, self._head_dim],
             dtype=dtype, device=device)
