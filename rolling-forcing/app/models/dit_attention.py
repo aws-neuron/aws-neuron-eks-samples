@@ -240,18 +240,12 @@ class CausalWanSelfAttention(nn.Module):
             cache_copy(k_dst, k_src)
 
     def _nki_rope_apply(self, x, grid_sizes, freqs_cos, freqs_sin, start_frame,
-                        rope_grid_cache=None, start_frame_int=None,
-                        head_start=None, head_end=None):
-        assert (head_start is None) == (head_end is None), (
-            "head_start and head_end must be provided together")
+                        rope_grid_cache=None, start_frame_int=None):
 
         b, s, n, d = x.shape
         f, h, w = grid_sizes
         seq_len = f * h * w
         assert seq_len == s
-        if head_start is None:
-            head_start = 0
-            head_end = n
 
         cache_key = None
         combined = None
@@ -307,8 +301,7 @@ class CausalWanSelfAttention(nn.Module):
         roped_q_full = self._nki_rope_apply(
             q_full_4d, grid_sizes, freqs_cos, freqs_sin,
             start_frame=start_frame_t, rope_grid_cache=rope_grid_cache,
-            start_frame_int=start_frame_int,
-            head_start=h_start, head_end=h_end)
+            start_frame_int=start_frame_int)
         sp_shard_len = L // self.sp_degree
         sp_start = self.sp_rank * sp_shard_len
         roped_query = roped_q_full[:, sp_start:sp_start + sp_shard_len]
@@ -316,8 +309,7 @@ class CausalWanSelfAttention(nn.Module):
         roped_key = self._nki_rope_apply(
             k_full_4d, grid_sizes, freqs_cos, freqs_sin,
             start_frame=start_frame_t, rope_grid_cache=rope_grid_cache,
-            start_frame_int=start_frame_int,
-            head_start=h_start, head_end=h_end)
+            start_frame_int=start_frame_int)
 
         if kv_cache is None or self._will_anchor_write(kv_cache, current_start):
             k = self._slice_heads(k_full)
