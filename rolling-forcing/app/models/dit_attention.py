@@ -197,7 +197,8 @@ class CausalWanSelfAttention(nn.Module):
         def _gather(t):
             if self.sp_degree == 1:
                 return t
-            out = torch.empty(L, self.dim, dtype=t.dtype, device=t.device)
+            dim_local = t.shape[1]  # dim // tp_degree after ColumnParallel
+            out = torch.empty(L, dim_local, dtype=t.dtype, device=t.device)
             ps.all_gather_into_tensor(out, t, "attn-sp")
             return out
 
