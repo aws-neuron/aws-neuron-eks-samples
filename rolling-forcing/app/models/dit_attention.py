@@ -268,14 +268,13 @@ class CausalWanSelfAttention(nn.Module):
             if cache_key is not None:
                 rope_grid_cache[cache_key] = combined
 
-        # Slice to local heads and pad for NKI kernel
+        # x is already [1, L, n_local, d] (local heads after ColumnParallel + gather)
         P = 128
         pad = (P - seq_len % P) % P
-        x_local = x[0, :seq_len, head_start:head_end, :].contiguous()
-        x_padded = torch.nn.functional.pad(x_local, (0, 0, 0, 0, 0, pad))
+        n_local = x.shape[2]
+        x_padded = torch.nn.functional.pad(x[0, :seq_len], (0, 0, 0, 0, 0, pad))
         combined_padded = torch.nn.functional.pad(combined, (0, 0, 0, pad))
 
-        n_local = head_end - head_start
         out = causal_rope_rotation(
             x_padded, combined_padded,
             num_heads=n_local, head_dim=d)
