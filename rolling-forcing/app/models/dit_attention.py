@@ -205,16 +205,17 @@ class CausalWanSelfAttention(nn.Module):
         return _gather(q_local), _gather(k_local), _gather(v_local)
 
     def _slice_heads(self, t):
-        return self._slice_heads_2d(t).unsqueeze(0)
+        # After SP gather, t is [L, dim_local] — already local heads
+        d = self.head_dim
+        n_local = self.heads_per_shard
+        L = t.shape[0]
+        return t.view(L, n_local, d).unsqueeze(0)
 
     def _slice_heads_2d(self, t):
         d = self.head_dim
-        n = self.num_heads
         n_local = self.heads_per_shard
-        h_start = self.tp_rank * n_local
-        h_end = h_start + n_local
         L = t.shape[0]
-        return t.view(L, n, d)[:, h_start:h_end]
+        return t.view(L, n_local, d)
 
     def _will_anchor_write(self, kv_cache, cache_start):
         cache_end = cache_start + self.block_length
@@ -293,14 +294,12 @@ class CausalWanSelfAttention(nn.Module):
         q_local, k_local, v_local = self._local_qkv_norm(x)
         q_full, k_full, v_full = self._gather_qkv(q_local, k_local, v_local, L)
 
-        n = self.num_heads
         d = self.head_dim
         n_local = self.heads_per_shard
-        h_start = self.tp_rank * n_local
-        h_end = h_start + n_local
-        q_full_4d = q_full.view(L, n, d).unsqueeze(0)
-        k_full_4d = k_full.view(L, n, d).unsqueeze(0)
-        v = self._slice_heads(v_full)
+        # After SP gather, tensors are [L, dim_local] where dim_local = n_local * d
+        q_full_4d = q_full.view(L, n_local, d).unsqueeze(0)
+        k_full_4d = k_full.view(L, n_local, d).unsqueeze(0)
+        v = v_full.view(L, n_local, d).unsqueeze(0)
 
         start_frame_int = current_start // frame_seqlen
         start_frame_t = torch.tensor(start_frame_int, device=x.device)
