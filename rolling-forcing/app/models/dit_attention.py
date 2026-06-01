@@ -264,7 +264,7 @@ class CausalWanSelfAttention(nn.Module):
             sf = start_frame.to(torch.int32).reshape(1, 1)
             combined = build_rope_grids(
                 freqs_cos, freqs_sin, self.sign_pattern, sf,
-                F=f, H=h, W=w, head_dim=d).view(seq_len, 2 * d)
+                F=f, H=h, W=w, head_dim=d)[:seq_len].view(seq_len, 2 * d)
             if cache_key is not None:
                 rope_grid_cache[cache_key] = combined
 
