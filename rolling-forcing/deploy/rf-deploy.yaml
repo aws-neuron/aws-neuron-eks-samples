@@ -117,7 +117,7 @@ spec:
               while :; do :; sleep 10; done
           resources:
             claims:
-              - name: s-lnc2-trn2
+              - name: s-lnc1-trn2
             requests:
               cpu: 44
               memory: 440Gi
@@ -153,7 +153,7 @@ spec:
             - name: USE_NEFF_CACHE
               value: "false"
             - name: WARMUP_FRAMES
-              value: "81"
+              value: "21"
             - name: VALIDATE_PIPELINE
               value: "1"
             - name: CONFIG_PATH
@@ -165,7 +165,7 @@ spec:
             - name: CHECKPOINT_PATH
               value: "checkpoints/rolling_forcing_dmd.pt"
             - name: DEFAULT_NUM_FRAMES
-              value: "81"
+              value: "21"
             - name: DEFAULT_FPS
               value: "16"
             - name: TP_DEGREE
