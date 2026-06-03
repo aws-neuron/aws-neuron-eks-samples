@@ -249,14 +249,17 @@ class RowParallelLinear(nn.Module):
             self.register_parameter('bias', None)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Local matmul (no bias yet)
-        out = nn.functional.linear(x, self.weight, None)
-        # All-reduce across TP ranks
+        # Local matmul (no bias yet) — compilable
+        out = self.local_linear(x)
+        # All-reduce across TP ranks — not compilable with fullgraph
         out = all_reduce_sum(out)
         # Add bias after all-reduce (only one copy of bias needed)
         if self.bias is not None:
             out = out + self.bias
         return out
+
+    def local_linear(self, x: torch.Tensor) -> torch.Tensor:
+        return nn.functional.linear(x, self.weight, None)
 
     def extra_repr(self):
         return (f'in_features={self.in_features} '
