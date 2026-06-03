@@ -14,8 +14,8 @@ spec:
       nodeSelector:
         node-type: trn2
       resourceClaims:
-        - name: m-trn2
-          resourceClaimTemplateName: m-trn2
+        - name: s-lnc1-trn2
+          resourceClaimTemplateName: s-lnc1-trn2
       containers:
         - name: inference
           image: 421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-0461d3b:latest
@@ -205,7 +205,7 @@ spec:
               ls -la "$ARCHIVE_DIR/" 2>/dev/null || true
           resources:
             claims:
-              - name: m-trn2
+              - name: s-lnc1-trn2
             requests:
               cpu: 44
               memory: 440Gi
