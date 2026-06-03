@@ -934,28 +934,9 @@ def main():
         warmup_seed = 42
         warmup_num_frames = WARMUP_FRAMES
 
-        # All ranks: broadcast command (same protocol as server/worker)
-        cmd = CMD_GENERATE.to(NEURON_DEVICE)
-        dist.broadcast(cmd, src=0)
-        meta = torch.tensor([warmup_num_frames, warmup_seed, 0], dtype=torch.long, device=NEURON_DEVICE)
-        dist.broadcast(meta, src=0)
-
-        # Tokenize and broadcast IDs
-        ids, mask_tok = state.tokenizer([warmup_prompt], return_mask=True, add_special_tokens=True)
-        ids_device = ids.to(torch.long).to(NEURON_DEVICE)
-        mask_tok_device = mask_tok.to(torch.long).to(NEURON_DEVICE)
-        dist.broadcast(ids_device, src=0)
-        dist.broadcast(mask_tok_device, src=0)
-
-        # T5 encode (T5_RANK encodes, broadcasts to all)
-        prompt_embeds = torch.zeros(1, 512, 4096, dtype=torch.bfloat16, device=NEURON_DEVICE)
-        if rank == T5_RANK:
-            seq_len = mask_tok_device.gt(0).sum(dim=1).long()
-            with torch.no_grad():
-                prompt_embeds = state.text_encoder(ids_device, mask_tok_device)
-            prompt_embeds[0, seq_len[0]:] = 0.0
-            prompt_embeds = prompt_embeds.to(torch.bfloat16).contiguous()
-        dist.broadcast(prompt_embeds, src=T5_RANK)
+        # T5 encode (all ranks via T5 parallel group)
+        from models.t5 import encode_one_prompt
+        prompt_embeds = encode_one_prompt(state.text_encoder, warmup_prompt)
 
         # DiT inference (all ranks participate via TP)
         noise = torch.randn(
