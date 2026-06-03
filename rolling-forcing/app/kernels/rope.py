@@ -1,43 +1,29 @@
-"""RoPE rotation NKI kernel, ported to bundled neuronxcc.nki API.
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Authors: Neuron Science Team, Amazon Annapurna Labs
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-causal_rope_rotation: Apply rotary position embeddings (rotate_half).
-
-Validated against PyTorch CPU reference with zero numerical drift.
-Max abs diff: 0.000000, Mean abs diff: 0.000000.
-
-IO tensor layouts:
-    - x:        [seq_len, num_heads, head_dim] bfloat16
-    - cos_sin:  [seq_len, 2 * head_dim] float32
-                columns [0, D): cos_expanded (interleaved pairs)
-                columns [D, 2D): sin_signed (with sign pattern applied)
-    - out:      [seq_len, num_heads, head_dim] same dtype as x
-
-seq_len must be a multiple of 128 (pad at call site).
-
-IMPORTANT: The outer seq_len tile loop uses nl.sequential_range, NOT nl.affine_range.
-affine_range enables software pipelining which corrupts SBUF when num_tiles > 8
-(the compiler overlaps load/compute/store across iterations, and at >8 iterations
-the pipeline depth exceeds hardware capacity, causing SBUF buffers from iteration N
-to be overwritten before their stores complete). The inner head loop (N=12) safely
-uses affine_range because it operates entirely within SBUF with no HBM IO.
-
-Diagnosed via systematic tile-count sweep: diff=0 for 1-8 tiles, ~22 max abs diff
-for 9+ tiles. Fix confirmed with all production shapes (858→896, 2574→2688,
-4290→4352) at diff=0.000000.
-
-Key substitutions from kernel_builder:
-    - .rearrange("p n (c two) -> p n c two") → strided slicing [:, 0::2] / [:, 1::2]
-    - .repeat("p x -> p c x") → per-head loop (N=12 is small)
-    - nb.range → nl.sequential_range (outer) / nl.affine_range (inner)
-    - tensor_tensor_arith(dst=,...) → return-style nisa.tensor_tensor()
-"""
+import torch
 import nki
 import nki.language as nl
-import nki.isa as nisa
+
+from torch_neuronx import wrap_nki
 
 
 @nki.jit
-def causal_rope_rotation(x, cos_sin, num_heads=12, head_dim=128):
+def _causal_rope_rotation_nki(x, cos_sin, num_heads=12, head_dim=128):
     seq_len = x.shape[0]
     N = num_heads
     D = head_dim
@@ -69,3 +55,44 @@ def causal_rope_rotation(x, cos_sin, num_heads=12, head_dim=128):
         nl.store(out[nl.ds(ts, P), :, :], out_sb)
 
     return out
+
+
+causal_rope_rotation = wrap_nki(_causal_rope_rotation_nki)
+
+
+def build_rope_grids(freqs_cos, freqs_sin, sign_pattern, start_frame,
+                     F=15, H=30, W=52, head_dim=128):
+    """Build 3D RoPE cos/sin grids in PyTorch (no NKI compilation needed)."""
+    d = head_dim
+    c = d // 2
+    s0 = c - 2 * (c // 3)
+    s1 = c // 3
+    seq_len = F * H * W
+    device = freqs_cos.device
+
+    frame_idx = start_frame.flatten() + torch.arange(F, device=device)
+
+    cos_half = torch.cat([
+        torch.index_select(freqs_cos[:, :s0], 0, frame_idx).view(F, 1, 1, -1).expand(F, H, W, -1),
+        freqs_cos[:H, s0:s0 + s1].view(1, H, 1, -1).expand(F, H, W, -1),
+        freqs_cos[:W, s0 + s1:].view(1, 1, W, -1).expand(F, H, W, -1),
+    ], dim=-1).reshape(seq_len, c)
+
+    sin_half = torch.cat([
+        torch.index_select(freqs_sin[:, :s0], 0, frame_idx).view(F, 1, 1, -1).expand(F, H, W, -1),
+        freqs_sin[:H, s0:s0 + s1].view(1, H, 1, -1).expand(F, H, W, -1),
+        freqs_sin[:W, s0 + s1:].view(1, 1, W, -1).expand(F, H, W, -1),
+    ], dim=-1).reshape(seq_len, c)
+
+    cos_expanded = cos_half.repeat_interleave(2, dim=-1)
+    sin_expanded = sin_half.repeat_interleave(2, dim=-1)
+    sign = torch.ones(d, device=device, dtype=sin_expanded.dtype)
+    sign[0::2] = -1.0
+    sin_signed = sin_expanded * sign.unsqueeze(0)
+    cos_sin = torch.cat([cos_expanded, sin_signed], dim=-1).contiguous()
+
+    P = 128
+    pad = (P - seq_len % P) % P
+    if pad > 0:
+        cos_sin = torch.nn.functional.pad(cos_sin, (0, 0, 0, pad))
+    return cos_sin
