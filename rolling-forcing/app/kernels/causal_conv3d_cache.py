@@ -21,8 +21,7 @@ import nki.language as nl
 import torch
 from torch_neuronx import nki_op
 
-def _compile(mod_or_fn):
-    return torch.compile(mod_or_fn, backend="neuron", dynamic=False, fullgraph=True)
+from utils import _compile
 
 _TILE_P = 128
 

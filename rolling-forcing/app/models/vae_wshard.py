@@ -20,7 +20,7 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models import parallel_state as ps
+from utils import parallel_state as ps
 from kernels.causal_conv3d_cache import (
     causal_conv3d_cache_update_shift,
     causal_conv3d_cache_update_copy,
@@ -32,11 +32,7 @@ CACHE_T = 2
 _GROUP = "vae-sp"
 
 
-import torch._dynamo
-torch._dynamo.config.cache_size_limit = 128
-
-def _compile(mod_or_fn):
-    return torch.compile(mod_or_fn, backend="neuron", dynamic=False, fullgraph=True)
+from utils import _compile
 
 
 def init_vae_parallel_group():
