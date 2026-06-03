@@ -29,8 +29,8 @@ spec:
       nodeSelector:
         node-type: trn2
       resourceClaims:
-        - name: s-lnc1-trn2
-          resourceClaimTemplateName: s-lnc1-trn2
+        - name: m-trn2
+          resourceClaimTemplateName: m-trn2
       containers:
         - name: app
           image: 421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-0461d3b:latest
@@ -42,7 +42,7 @@ spec:
               set -euxo pipefail
               
               # Clone the aws-neuron-eks-samples repository (rolling-forcing branch)
-              git clone -b rolling-forcing-tp8-sp2 https://yahavb:${GITHUB_TOKEN}@github.com/aws-neuron/aws-neuron-eks-samples.git
+              git clone -b rolling-forcing-tp8-sp2-vae-wshard https://yahavb:${GITHUB_TOKEN}@github.com/aws-neuron/aws-neuron-eks-samples.git
               
               export RF_DEVICE_BACKEND=neuron
               cd aws-neuron-eks-samples/rolling-forcing/app
@@ -109,7 +109,7 @@ spec:
               fi
               
               # Launch with torchrun for TP=4
-              # 8 NeuronCores (s-lnc1-trn2 = 1 ND, LNC=1, 8 NCs)
+              # 8 NeuronCores (m-trn2 = 1 ND, LNC=1, 8 NCs)
               # TP=4 x SP=2, T5 on rank 2, VAE on rank 0
               export REPO_DIR=$(pwd)
               torchrun --nproc_per_node=8 --master_port=29500 \
@@ -117,7 +117,7 @@ spec:
               while :; do :; sleep 10; done
           resources:
             claims:
-              - name: s-lnc1-trn2
+              - name: m-trn2
             requests:
               cpu: 44
               memory: 440Gi
