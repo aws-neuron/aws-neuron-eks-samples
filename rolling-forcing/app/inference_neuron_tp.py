@@ -256,47 +256,12 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
         logger.info(f"  Sub-module compilation (fullgraph=True): Q/K/V/O + FFN per block")
         logger.info(f"  NKI kernels + norms: eager")
 
-    # ── Load VAE (TP-aware: shard across VAE_RANKS or single rank) ───────────
-    if VAE_TP_DEGREE > 1:
-        # Multi-rank VAE TP: load on all VAE_RANKS, shard decoder
-        from models.vae_tp import create_vae_tp_group, shard_vae_model_tp
-        vae_tp_group = create_vae_tp_group(VAE_RANKS)
-
-        if rank in VAE_RANKS:
-            vae_tp_rank = VAE_RANKS.index(rank)
-            logger.info(f"Loading VAE with TP={VAE_TP_DEGREE} (global_rank={rank}, vae_tp_rank={vae_tp_rank})...")
-            from wan.modules.vae import _video_vae
-
-            state.vae_model = _video_vae(pretrained_path=VAE_PATH, z_dim=16).eval().requires_grad_(False)
-            shard_vae_model_tp(state.vae_model, tp_rank=vae_tp_rank, tp_degree=VAE_TP_DEGREE)
-            state.vae_model = state.vae_model.to(dtype=torch.bfloat16, device=NEURON_DEVICE)
-            logger.info(f"VAE TP-sharded on Neuron (rank {rank}, vae_tp_rank={vae_tp_rank})")
-    else:
-        # Single-rank VAE (original path)
-        if rank == VAE_RANK:
-            logger.info(f"Loading VAE (rank {VAE_RANK}, on Neuron with torch.compile)...")
-            from wan.modules.vae import _video_vae
-
-            state.vae_model = _video_vae(pretrained_path=VAE_PATH, z_dim=16).eval().requires_grad_(False)
-            state.vae_model = state.vae_model.to(dtype=torch.bfloat16, device=NEURON_DEVICE)
-            state.vae_model = torch.compile(state.vae_model, backend='neuron', dynamic=False)
-            logger.info(f"VAE loaded on Neuron with torch.compile (rank {VAE_RANK})")
-
-    mean = torch.tensor([
-        -0.7571, -0.7089, -0.9113, 0.1075, -0.1745, 0.9653, -0.1517, 1.5508,
-        0.4134, -0.0715, 0.5517, -0.3632, -0.1922, -0.9497, 0.2503, -0.2921
-    ], dtype=torch.bfloat16)
-
-    std = torch.tensor([
-        2.8184, 1.4541, 2.3275, 2.6558, 1.2196, 1.7708, 2.6052, 2.0743,
-        3.2687, 2.1526, 2.8652, 1.5579, 1.6382, 1.1253, 2.8251, 1.9160
-    ], dtype=torch.bfloat16)
-
-    # VAE scale must be on same device as VAE model (Neuron for VAE ranks)
-    if rank in VAE_RANKS:
-        state.vae_scale = [mean.to(NEURON_DEVICE), (1.0 / std).to(NEURON_DEVICE)]
-    else:
-        state.vae_scale = [mean, 1.0 / std]
+    # ── Load VAE (width-sharded across ALL ranks) ──────────────────────────────
+    from models.vae_wshard import build_vae, init_vae_parallel_group
+    init_vae_parallel_group()
+    logger.info(f"Loading width-sharded VAE (rank {rank})...")
+    state.vae_model = build_vae(dtype=torch.bfloat16)
+    logger.info(f"VAE width-sharded on Neuron (rank {rank})")
 
     # Sync all ranks before starting
     if dist.is_initialized():
@@ -364,24 +329,54 @@ def encode_prompt_distributed(state: PipelineState, prompt: str) -> torch.Tensor
     return prompt_embeds
 
 
-def decode_latents(state: PipelineState, latents: torch.Tensor) -> List[np.ndarray]:
-    """Decode latents through VAE on Neuron (VAE_RANK only).
+def w_shard(tensor, rank, world):
+    W = tensor.shape[-1]
+    assert W % world == 0, f"W={W} not divisible by world={world}"
+    s = W // world
+    return tensor[..., rank * s:(rank + 1) * s].contiguous()
 
-    All ops on Neuron — clamp included.
-    """
-    # Rearrange on CPU before moving to device (avoids non-contiguous on Neuron)
-    latents_bcthw = rearrange(latents, 'b t c h w -> b c t h w')
-    latents_bcthw = latents_bcthw.to(torch.bfloat16).to(NEURON_DEVICE)
+
+def decode_latents_wshard(state: PipelineState, latent_block: torch.Tensor,
+                          chunk_idx: int) -> List[np.ndarray]:
+    """Decode latents through width-sharded VAE on all ranks with streaming cache."""
+    rank = state.rank
+    world = state.world_size
+
+    latent_device = latent_block.to(torch.bfloat16).to(NEURON_DEVICE)
+    chunk_latent = w_shard(latent_device, rank, world)
 
     with torch.no_grad():
-        video = state.vae_model.decode(latents_bcthw, state.vae_scale)
+        chunk_device = state.vae_model.decode_to_pixel_device(
+            chunk_latent, use_cache=True, chunk_idx=chunk_idx)
+        chunk_video = state.vae_model.postprocess_pixels(chunk_device)
 
-    # All post-processing on Neuron, then move to CPU at end
-    video = rearrange(video, 'b c t h w -> b t h w c')
-    video = (video * 0.5 + 0.5).clamp(0, 1).cpu()
-    video_np = (255.0 * video[0]).to(torch.uint8).numpy()
+    # chunk_video is [1, T, C, H, W_local] on CPU
+    # Gather all width shards on rank 0 via file exchange
+    import tempfile
+    scratch_dir = os.path.join(tempfile.gettempdir(), "vae_shards")
+    if rank == 0:
+        os.makedirs(scratch_dir, exist_ok=True)
+    dist.barrier()
+    torch.save(chunk_video, os.path.join(scratch_dir, f"shard_rank{rank}.pt"))
+    dist.barrier()
 
-    return [video_np[i] for i in range(video_np.shape[0])]
+    frames = []
+    if rank == 0:
+        shards = [
+            torch.load(os.path.join(scratch_dir, f"shard_rank{r}.pt"), map_location="cpu")
+            for r in range(world)
+        ]
+        video = torch.cat(shards, dim=-1)  # [1, T, C, H, W_full]
+        video = (video * 0.5 + 0.5).clamp(0, 1)
+        video = rearrange(video[0], 't c h w -> t h w c')
+        video_np = (255.0 * video).to(torch.uint8).numpy()
+        frames = [video_np[i] for i in range(video_np.shape[0])]
+
+    dist.barrier()
+    if rank == 0:
+        for r in range(world):
+            os.remove(os.path.join(scratch_dir, f"shard_rank{r}.pt"))
+    return frames
 
 
 def run_dit_inference(state: PipelineState, noise: torch.Tensor,
@@ -452,14 +447,14 @@ def worker_loop(state: PipelineState):
 
             # Participate in TP forward pass (must match rank 0's code path)
             if cmd.item() == CMD_STREAM.item():
-                # Streaming: rank 0 calls inference_rolling_forcing_streaming,
-                # workers must call the same to stay in all-reduce lockstep
+                # Streaming: all ranks participate in DiT + width-sharded VAE
+                state.vae_model.model.clear_cache()
+                block_idx = 0
                 for start_frame, latent_block in state.dit_pipeline.inference_rolling_forcing_streaming(
                     noise, conditional_dict
                 ):
-                    # VAE TP workers must participate in VAE decode (all-reduce ops)
-                    if VAE_TP_DEGREE > 1 and rank in VAE_RANKS and state.vae_model is not None:
-                        _ = decode_latents(state, latent_block.cpu())
+                    _ = decode_latents_wshard(state, latent_block, block_idx)
+                    block_idx += 1
             else:
                 _ = run_dit_inference(state, noise, conditional_dict)
                 # VAE TP workers participate in non-streaming decode too
@@ -686,6 +681,7 @@ def _run_single_generation(state: PipelineState, prompt: str, num_frames: int, s
     This is the core generation loop extracted for reuse in warmup + benchmark runs.
     """
     torch.manual_seed(seed)
+    state.vae_model.model.clear_cache()
 
     # Broadcast command + metadata to workers (streaming mode)
     cmd = CMD_STREAM.to(NEURON_DEVICE)
@@ -727,9 +723,9 @@ def _run_single_generation(state: PipelineState, prompt: str, num_frames: int, s
     ):
         dit_time = time.time() - last_yield_time
 
-        # VAE decode
+        # VAE decode (width-sharded across all ranks)
         vae_start = time.time()
-        frames_np = decode_latents(state, latent_block.cpu())
+        frames_np = decode_latents_wshard(state, latent_block, block_idx)
         vae_time = time.time() - vae_start
 
         block_e2e = dit_time + vae_time
