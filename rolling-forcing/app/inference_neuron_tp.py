@@ -705,6 +705,7 @@ def _run_single_generation(state: PipelineState, prompt: str, num_frames: int, s
     prompt_embeds = torch.zeros(1, 512, 4096, dtype=torch.bfloat16, device=NEURON_DEVICE)
     dist.broadcast(prompt_embeds, src=T5_RANK)
     t5_time = time.time() - t5_start
+    logger.info(f"  T5:          {t5_time*1000:7.1f} ms")
 
     # Prepare noise
     noise = torch.randn(
@@ -744,6 +745,8 @@ def _run_single_generation(state: PipelineState, prompt: str, num_frames: int, s
             "n_frames": n_frames,
             "wall_s": time.time() - gen_start,
         })
+        block_fps = n_frames / block_e2e if block_e2e > 0 else 0
+        logger.info(f"  block {block_idx:2d}: DiT {dit_time*1000:7.1f} ms  VAE {vae_time*1000:6.1f} ms  {n_frames:2d} frames  {block_fps:5.2f} fps")
         block_idx += 1
         last_yield_time = time.time()
 
