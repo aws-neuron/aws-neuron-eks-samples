@@ -432,7 +432,7 @@ class CausalWanSelfAttention(nn.Module):
             q_kern, k_kern, v_kern,
             softmax_scale=self.softmax_scale,
             actual_seqlen_k=k_len_int,
-            use_dynamic_loop=True,
+            use_dynamic_loop=False,
         )
         return out.unsqueeze(0).flatten(2)
 
