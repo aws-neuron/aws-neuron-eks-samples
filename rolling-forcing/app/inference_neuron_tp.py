@@ -257,9 +257,9 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
         block.cross_attn.o = _compile(block.cross_attn.o)
         block.ffn[0] = _compile(block.ffn[0])
         block.ffn[1] = _compile(block.ffn[1])
-        block._modulated_norm_scale_shard = _compile(block._modulated_norm_scale_shard)
-        block._modulated_norm_shift_shard = _compile(block._modulated_norm_shift_shard)
-        block._modulated_residual_shard = _compile(block._modulated_residual_shard)
+        block._modulated_norm_scale = _compile(block._modulated_norm_scale)
+        block._modulated_norm_shift = _compile(block._modulated_norm_shift)
+        block._modulated_residual = _compile(block._modulated_residual)
 
     if rank == 0:
         logger.info(f"DiT 1.3B TP-sharded on neuron (rank {rank}, {TP_DEGREE} ranks total)")
