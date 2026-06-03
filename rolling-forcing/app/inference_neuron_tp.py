@@ -205,6 +205,39 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
         CONFIG_PATH, CHECKPOINT_PATH, TP_DEGREE, use_ema=True,
     )
 
+    # Apply torch.compile to all sub-modules after weights are loaded
+    _compile = lambda m: torch.compile(m, backend='neuron', dynamic=False, fullgraph=True)
+
+    dit_model = state.dit_pipeline.generator.model
+    dit_model.patch_embedding = _compile(dit_model.patch_embedding)
+    dit_model.text_embedding = _compile(dit_model.text_embedding)
+    dit_model.time_embedding = _compile(dit_model.time_embedding)
+    dit_model.time_projection = _compile(dit_model.time_projection)
+    dit_model.head = _compile(dit_model.head)
+    dit_model._sinusoidal_embedding_1d = _compile(dit_model._sinusoidal_embedding_1d)
+    dit_model._unpatchify = _compile(dit_model._unpatchify)
+    if hasattr(dit_model, '_expand_e_shard_neuron'):
+        dit_model._expand_e_shard_neuron = _compile(dit_model._expand_e_shard_neuron)
+    state.dit_pipeline.generator._convert_flow_pred_to_x0 = _compile(
+        state.dit_pipeline.generator._convert_flow_pred_to_x0)
+    state.dit_pipeline._add_noise = _compile(state.dit_pipeline._add_noise)
+
+    for block in dit_model.blocks:
+        block.self_attn.q = _compile(block.self_attn.q)
+        block.self_attn.k = _compile(block.self_attn.k)
+        block.self_attn.v = _compile(block.self_attn.v)
+        block.self_attn.o = _compile(block.self_attn.o)
+        block.self_attn.norm_q = _compile(block.self_attn.norm_q)
+        block.self_attn.norm_k = _compile(block.self_attn.norm_k)
+        block.cross_attn.q = _compile(block.cross_attn.q)
+        block.cross_attn.k = _compile(block.cross_attn.k)
+        block.cross_attn.v = _compile(block.cross_attn.v)
+        block.cross_attn.o = _compile(block.cross_attn.o)
+        block.ffn = _compile(block.ffn)
+        block._modulated_norm_scale_shard = _compile(block._modulated_norm_scale_shard)
+        block._modulated_norm_shift_shard = _compile(block._modulated_norm_shift_shard)
+        block._modulated_residual_shard = _compile(block._modulated_residual_shard)
+
     if rank == 0:
         logger.info(f"DiT 1.3B loaded with SP={sp_degree} TP={TP_DEGREE}")
         logger.info(f"  All modules compiled via torch.compile(backend='neuron')")

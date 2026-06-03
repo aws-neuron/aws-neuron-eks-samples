@@ -5,7 +5,8 @@ torch._dynamo.config.cache_size_limit = 128
 
 
 def _compile(mod_or_fn):
-    return torch.compile(mod_or_fn, backend="neuron", dynamic=False, fullgraph=True)
+    """No-op at construction time. Real compilation applied after weight loading."""
+    return mod_or_fn
 
 
 def w_shard(tensor, rank, world):
