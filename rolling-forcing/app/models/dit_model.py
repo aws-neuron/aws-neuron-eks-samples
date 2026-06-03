@@ -258,6 +258,7 @@ class WanDiffusionWrapper(torch.nn.Module):
         if num_layers is not None:
             kwargs["num_layers"] = num_layers
         kwargs["ignore_mismatched_sizes"] = True
+        kwargs["low_cpu_mem_usage"] = False
         if tp_degree > 1:
             _prev_verbosity = diffusers_logging.get_verbosity()
             diffusers_logging.set_verbosity_error()
