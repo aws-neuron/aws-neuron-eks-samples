@@ -111,12 +111,6 @@ def setup_distributed():
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
-    # Initialize SP/TP parallel groups
-    sp_degree = world_size // TP_DEGREE
-    if sp_degree > 1:
-        from models.parallel_state import init_parallel_groups
-        init_parallel_groups(sp_degree, TP_DEGREE)
-
     return rank, world_size
 
 
@@ -195,84 +189,25 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
     tokenizer_path = os.path.join(MODEL_PATH, "google/umt5-xxl/")
     state.tokenizer = HuggingfaceTokenizer(name=tokenizer_path, seq_len=512, clean='whitespace')
 
-    # ── Load DiT with TP sharding (all ranks) ─────────────────────────
+    # ── Load DiT with SP+TP sharding (all ranks) — matching rolling_forcing ──
     if rank == 0:
         logger.info(f"Loading DiT 1.3B with TP={TP_DEGREE} (rank {rank})...")
 
-    from models.tp_utils import init_tp_group
-    from models.causal_inference_pipeline_tp import CausalInferencePipelineTP
-
-    init_tp_group(tp_degree=TP_DEGREE)
-
-    state.dit_pipeline = CausalInferencePipelineTP(
-        denoising_step_list=list(getattr(state.config, "denoising_step_list", [1000, 800, 600, 400, 200])),
-        num_frame_per_block=getattr(state.config, "num_frame_per_block", 3),
-        context_noise=getattr(state.config, "context_noise", 0.0),
-        warp_denoising_step=getattr(state.config, "warp_denoising_step", True),
-        model_name="Wan2.1-T2V-1.3B",
-        timestep_shift=getattr(state.config, "timestep_shift", 5.0),
-        frame_seq_length=state.frame_seq_length,
-        tp_degree=TP_DEGREE,
+    from models.dit_pipeline import (
+        build_dit_pipeline,
+        init_parallel_groups,
     )
 
-    # Load RollingForcing DMD distilled weights (required for 5-step denoising).
-    # from_pretrained loaded base Wan weights; this overlays the DMD-trained weights.
-    # load_distilled_weights handles TP-aware sharding: it takes full checkpoint
-    # weights and extracts each rank's shard (column-parallel for Q/K/V/fc1,
-    # row-parallel for O/fc2, replicated for norms/embeddings).
-    if os.path.exists(CHECKPOINT_PATH):
-        logger.info(f"Loading DMD checkpoint: {CHECKPOINT_PATH} (rank {rank})")
-        state.dit_pipeline.generator.load_distilled_weights(CHECKPOINT_PATH, use_ema=True)
-    else:
-        logger.warning(f"DMD checkpoint not found: {CHECKPOINT_PATH} — using base weights (will produce noise with 5-step schedule!)")
+    sp_degree = world_size // TP_DEGREE
+    init_parallel_groups(sp_degree, TP_DEGREE)
 
-    # Move TP-sharded DiT to this rank's Neuron core
-    state.dit_pipeline.generator.model = state.dit_pipeline.generator.model.to(NEURON_DEVICE)
-
-    # Sub-module compilation with fullgraph=True:
-    # Compile individual ops (no dynamo guards on Python ints).
-    _compile = lambda m: torch.compile(m, backend='neuron', dynamic=False, fullgraph=True)
-
-    dit_model = state.dit_pipeline.generator.model
-    dit_model.patch_embedding = _compile(dit_model.patch_embedding)
-    dit_model.text_embedding = _compile(dit_model.text_embedding)
-    dit_model.time_embedding = _compile(dit_model.time_embedding)
-    dit_model.time_projection = _compile(dit_model.time_projection)
-    dit_model.head = _compile(dit_model.head)
-    dit_model._sinusoidal_embedding_1d = _compile(dit_model._sinusoidal_embedding_1d)
-    dit_model._unpatchify = _compile(dit_model._unpatchify)
-    if hasattr(dit_model, '_expand_e_shard_neuron'):
-        dit_model._expand_e_shard_neuron = _compile(dit_model._expand_e_shard_neuron)
-    state.dit_pipeline.generator._convert_flow_pred_to_x0 = _compile(
-        state.dit_pipeline.generator._convert_flow_pred_to_x0)
-    state.dit_pipeline._add_noise = _compile(state.dit_pipeline._add_noise)
-
-    for i, block in enumerate(dit_model.blocks):
-        block.self_attn.q = _compile(block.self_attn.q)
-        block.self_attn.k = _compile(block.self_attn.k)
-        block.self_attn.v = _compile(block.self_attn.v)
-        block.self_attn.norm_q = _compile(block.self_attn.norm_q)
-        block.self_attn.norm_k = _compile(block.self_attn.norm_k)
-        block.self_attn.o.local_linear = _compile(block.self_attn.o.local_linear)
-        block.cross_attn.q = _compile(block.cross_attn.q)
-        block.cross_attn.k = _compile(block.cross_attn.k)
-        block.cross_attn.v = _compile(block.cross_attn.v)
-        block.cross_attn.norm_q = _compile(block.cross_attn.norm_q)
-        block.cross_attn.norm_k = _compile(block.cross_attn.norm_k)
-        block.cross_attn.o.local_linear = _compile(block.cross_attn.o.local_linear)
-        block.norm1 = _compile(block.norm1)
-        block.norm2 = _compile(block.norm2)
-        block.norm3 = _compile(block.norm3)
-        block.ffn[0] = _compile(block.ffn[0])
-        block.ffn[1] = _compile(block.ffn[1])
-        block._modulated_norm_scale = _compile(block._modulated_norm_scale)
-        block._modulated_norm_shift = _compile(block._modulated_norm_shift)
-        block._modulated_residual = _compile(block._modulated_residual)
+    state.dit_pipeline = build_dit_pipeline(
+        CONFIG_PATH, CHECKPOINT_PATH, TP_DEGREE, use_ema=True,
+    )
 
     if rank == 0:
-        logger.info(f"DiT 1.3B TP-sharded on neuron (rank {rank}, {TP_DEGREE} ranks total)")
-        logger.info(f"  Sub-module compilation (fullgraph=True): Q/K/V/O + FFN per block")
-        logger.info(f"  NKI kernels + norms: eager")
+        logger.info(f"DiT 1.3B loaded with SP={sp_degree} TP={TP_DEGREE}")
+        logger.info(f"  All modules compiled via torch.compile(backend='neuron')")
 
     # ── Load VAE (width-sharded across ALL ranks) ──────────────────────────────
     from models.vae_wshard import build_vae, init_vae_parallel_group
@@ -468,7 +403,7 @@ def worker_loop(state: PipelineState):
                 # Streaming: all ranks participate in DiT + width-sharded VAE
                 state.vae_model.model.clear_cache()
                 block_idx = 0
-                for start_frame, latent_block in state.dit_pipeline.inference_rolling_forcing_streaming(
+                for latent_block in state.dit_pipeline.inference_rolling_forcing_stream(
                     noise, conditional_dict
                 ):
                     _ = decode_latents_wshard(state, latent_block, block_idx)
@@ -598,7 +533,7 @@ def run_server(state: PipelineState):
     async def generate_video_streaming(request: GenerateRequest):
         """TRUE streaming: interleaves DiT block generation with VAE decode.
 
-        Uses inference_rolling_forcing_streaming() which yields finalized
+        Uses inference_rolling_forcing_stream() which yields finalized
         latent blocks as they complete. Each block is decoded through VAE
         immediately and sent to the client as SSE frames.
         """
@@ -634,7 +569,7 @@ def run_server(state: PipelineState):
 
                 # Step 5: TRUE streaming — yields finalized blocks during DiT inference
                 frame_count = 0
-                for start_frame, latent_block in state.dit_pipeline.inference_rolling_forcing_streaming(
+                for latent_block in state.dit_pipeline.inference_rolling_forcing_stream(
                     noise, conditional_dict
                 ):
                     # latent_block: [B, nfpb, C, H, W] — decode immediately
@@ -742,7 +677,7 @@ def _run_single_generation(state: PipelineState, prompt: str, num_frames: int, s
     gen_start = time.time()
     last_yield_time = time.time()
 
-    for start_frame, latent_block in state.dit_pipeline.inference_rolling_forcing_streaming(
+    for latent_block in state.dit_pipeline.inference_rolling_forcing_stream(
         noise, conditional_dict
     ):
         dit_time = time.time() - last_yield_time

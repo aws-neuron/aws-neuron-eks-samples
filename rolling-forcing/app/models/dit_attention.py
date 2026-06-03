@@ -21,79 +21,18 @@ import torch
 import torch.nn as nn
 
 from kernels.kv_cache_copy import cache_copy, kv_cache_copy
+from kernels.restore_layout import restore_layout
+from kernels.rope import causal_rope_rotation, build_rope_grids
 from kernels.self_attention_nst import wan_flash_self_attn
-from models import parallel_state as ps
-from models.layers import (
+from utils import _compile
+from utils import parallel_state as ps
+
+from models.dit_layers import (
     ATTN_SEQLEN_MULTIPLE,
+    WanLayerNorm,
     WanRMSNorm,
-    causal_rope_rotation_nki as causal_rope_rotation,
+    WanT2VCrossAttention,
 )
-
-
-def _compile(mod_or_fn):
-    """No-op during construction — compilation done after weight loading in inference_neuron_tp.py."""
-    return mod_or_fn
-
-
-def build_rope_grids(freqs_cos, freqs_sin, sign_pattern, start_frame,
-                     F=15, H=44, W=78, head_dim=128):
-    """Build 3D RoPE cos/sin grids in PyTorch (replaces alpha NKI kernel)."""
-    d = head_dim
-    c = d // 2
-    s0 = c - 2 * (c // 3)
-    s1 = c // 3
-    seq_len = F * H * W
-    device = freqs_cos.device
-
-    frame_idx = start_frame.flatten() + torch.arange(F, device=device)
-
-    cos_half = torch.cat([
-        torch.index_select(freqs_cos[:, :s0], 0, frame_idx).view(F, 1, 1, -1).expand(F, H, W, -1),
-        freqs_cos[:H, s0:s0 + s1].view(1, H, 1, -1).expand(F, H, W, -1),
-        freqs_cos[:W, s0 + s1:].view(1, 1, W, -1).expand(F, H, W, -1)
-    ], dim=-1).reshape(seq_len, c)
-
-    sin_half = torch.cat([
-        torch.index_select(freqs_sin[:, :s0], 0, frame_idx).view(F, 1, 1, -1).expand(F, H, W, -1),
-        freqs_sin[:H, s0:s0 + s1].view(1, H, 1, -1).expand(F, H, W, -1),
-        freqs_sin[:W, s0 + s1:].view(1, 1, W, -1).expand(F, H, W, -1)
-    ], dim=-1).reshape(seq_len, c)
-
-    cos_expanded = cos_half.repeat_interleave(2, dim=-1)
-    sin_expanded = sin_half.repeat_interleave(2, dim=-1)
-    sign = torch.ones(d, device=device, dtype=sin_expanded.dtype)
-    sign[0::2] = -1.0
-    sin_signed = sin_expanded * sign.unsqueeze(0)
-    cos_sin = torch.cat([cos_expanded, sin_signed], dim=-1).contiguous()
-
-    # Pad to multiple of 128
-    P = 128
-    pad = (P - seq_len % P) % P
-    if pad > 0:
-        cos_sin = torch.nn.functional.pad(cos_sin, (0, 0, 0, pad))
-    return cos_sin
-
-
-def restore_layout(gathered, N, L_cu, L_dn):
-    """Rearrange AllGathered tensor: deinterleave cu/dn from each rank's chunk.
-
-    Input: [rank0_cu|rank0_dn, rank1_cu|rank1_dn, ...]
-    Output: [all_cu_tokens | all_dn_tokens] in rank order
-    """
-    L_full = L_cu + L_dn
-    L_full_N = L_full // N
-    L_cu_N = L_cu // N
-    L_dn_N = L_dn // N
-    dim = gathered.shape[1]
-
-    cu_parts = []
-    dn_parts = []
-    for w in range(N):
-        start = w * L_full_N
-        cu_parts.append(gathered[start:start + L_cu_N])
-        dn_parts.append(gathered[start + L_cu_N:start + L_full_N])
-
-    return torch.cat(cu_parts + dn_parts, dim=0)
 
 
 def expand_e_shard(e, start_frame, end_frame, start_off, shard_len, frame_seqlen):
@@ -156,7 +95,10 @@ class CausalWanSelfAttention(nn.Module):
         self.q = _compile(nn.Linear(dim, dim))
         self.k = _compile(nn.Linear(dim, dim))
         self.v = _compile(nn.Linear(dim, dim))
-        self.o = _compile(nn.Linear(dim, dim))
+        if tp_degree > 1:
+            self.o = _compile(nn.Linear(dim // tp_degree, dim))
+        else:
+            self.o = _compile(nn.Linear(dim, dim))
         self.norm_q = WanRMSNorm(dim, eps=eps)
         self.norm_k = WanRMSNorm(dim, eps=eps)
 
@@ -195,27 +137,25 @@ class CausalWanSelfAttention(nn.Module):
 
     def _gather_qkv(self, q_local, k_local, v_local, L):
         def _gather(t):
-            if self.sp_degree == 1:
+            if self.world_size == 1:
                 return t
-            dim_local = t.shape[1]
-            out = torch.empty(L, dim_local, dtype=t.dtype, device=t.device)
-            ps.all_gather_into_tensor(out, t, "attn-sp")
+            out = torch.empty(L, self.dim, dtype=t.dtype, device=t.device)
+            ps.all_gather_into_tensor(out, t, "world")
             return out
 
         return _gather(q_local), _gather(k_local), _gather(v_local)
 
     def _slice_heads(self, t):
-        # After SP gather, t is [L, dim_local] — already local heads
-        d = self.head_dim
-        n_local = self.heads_per_shard
-        L = t.shape[0]
-        return t.view(L, n_local, d).unsqueeze(0)
+        return self._slice_heads_2d(t).unsqueeze(0)
 
     def _slice_heads_2d(self, t):
         d = self.head_dim
+        n = self.num_heads
         n_local = self.heads_per_shard
+        h_start = self.tp_rank * n_local
+        h_end = h_start + n_local
         L = t.shape[0]
-        return t.view(L, n_local, d)
+        return t.view(L, n, d)[:, h_start:h_end]
 
     def _will_anchor_write(self, kv_cache, cache_start):
         cache_end = cache_start + self.block_length
@@ -240,12 +180,18 @@ class CausalWanSelfAttention(nn.Module):
             cache_copy(k_dst, k_src)
 
     def _nki_rope_apply(self, x, grid_sizes, freqs_cos, freqs_sin, start_frame,
-                        rope_grid_cache=None, start_frame_int=None):
+                        rope_grid_cache=None, start_frame_int=None,
+                        head_start=None, head_end=None):
+        assert (head_start is None) == (head_end is None), (
+            "head_start and head_end must be provided together")
 
         b, s, n, d = x.shape
         f, h, w = grid_sizes
         seq_len = f * h * w
         assert seq_len == s
+        if head_start is None:
+            head_start = 0
+            head_end = n
 
         cache_key = None
         combined = None
@@ -259,15 +205,15 @@ class CausalWanSelfAttention(nn.Module):
             sf = start_frame.to(torch.int32).reshape(1, 1)
             combined = build_rope_grids(
                 freqs_cos, freqs_sin, self.sign_pattern, sf,
-                F=f, H=h, W=w, head_dim=d)[:seq_len].view(seq_len, 2 * d)
+                F=f, H=h, W=w, head_dim=d)[:seq_len]
             if cache_key is not None:
                 rope_grid_cache[cache_key] = combined
 
-        # x is already [1, L, n_local, d] (local heads after ColumnParallel + gather)
+        n_local = head_end - head_start
         P = 128
         pad = (P - seq_len % P) % P
-        n_local = x.shape[2]
-        x_padded = torch.nn.functional.pad(x[0, :seq_len], (0, 0, 0, 0, 0, pad))
+        x_local = x[0, :seq_len, head_start:head_end, :]
+        x_padded = torch.nn.functional.pad(x_local, (0, 0, 0, 0, 0, pad))
         combined_padded = torch.nn.functional.pad(combined, (0, 0, 0, pad))
 
         out = causal_rope_rotation(
@@ -282,18 +228,20 @@ class CausalWanSelfAttention(nn.Module):
         frame_seqlen = h * w
         L = f * h * w
 
-        assert L % self.sp_degree == 0, (
-            f"L ({L}) must be divisible by sp_degree ({self.sp_degree})")
+        assert L % self.world_size == 0, (
+            f"L ({L}) must be divisible by world_size ({self.world_size})")
 
         q_local, k_local, v_local = self._local_qkv_norm(x)
         q_full, k_full, v_full = self._gather_qkv(q_local, k_local, v_local, L)
 
+        n = self.num_heads
         d = self.head_dim
         n_local = self.heads_per_shard
-        # After SP gather, tensors are [L, dim_local] where dim_local = n_local * d
-        q_full_4d = q_full.view(L, n_local, d).unsqueeze(0)
-        k_full_4d = k_full.view(L, n_local, d).unsqueeze(0)
-        v = v_full.view(L, n_local, d).unsqueeze(0)
+        h_start = self.tp_rank * n_local
+        h_end = h_start + n_local
+        q_full_4d = q_full.view(L, n, d).unsqueeze(0)
+        k_full_4d = k_full.view(L, n, d).unsqueeze(0)
+        v = self._slice_heads(v_full)
 
         start_frame_int = current_start // frame_seqlen
         start_frame_t = torch.tensor(start_frame_int, device=x.device)
@@ -301,7 +249,8 @@ class CausalWanSelfAttention(nn.Module):
         roped_q_full = self._nki_rope_apply(
             q_full_4d, grid_sizes, freqs_cos, freqs_sin,
             start_frame=start_frame_t, rope_grid_cache=rope_grid_cache,
-            start_frame_int=start_frame_int)
+            start_frame_int=start_frame_int,
+            head_start=h_start, head_end=h_end)
         sp_shard_len = L // self.sp_degree
         sp_start = self.sp_rank * sp_shard_len
         roped_query = roped_q_full[:, sp_start:sp_start + sp_shard_len]
@@ -309,7 +258,8 @@ class CausalWanSelfAttention(nn.Module):
         roped_key = self._nki_rope_apply(
             k_full_4d, grid_sizes, freqs_cos, freqs_sin,
             start_frame=start_frame_t, rope_grid_cache=rope_grid_cache,
-            start_frame_int=start_frame_int)
+            start_frame_int=start_frame_int,
+            head_start=h_start, head_end=h_end)
 
         if kv_cache is None or self._will_anchor_write(kv_cache, current_start):
             k = self._slice_heads(k_full)
@@ -437,8 +387,15 @@ class CausalWanSelfAttention(nn.Module):
         return out.unsqueeze(0).flatten(2)
 
     def _output_proj(self, out):
-        # O projection — RowParallelLinear (from shard_model_tp) handles all_reduce internally
         out = self.o(out)
+        if self.tp_degree > 1:
+            seq_len = out.shape[1]
+            out_flat = out.reshape(-1, self.dim)
+            rs_out = torch.empty(
+                seq_len // self.tp_degree, self.dim,
+                dtype=out.dtype, device=out.device)
+            ps.reduce_scatter_tensor(rs_out, out_flat, "attn-tp")
+            out = rs_out.unsqueeze(0)
         return out
 
     def forward_merged(
@@ -466,22 +423,29 @@ class CausalWanSelfAttention(nn.Module):
 
         sp = self.sp_degree
         tp = self.tp_degree
-        assert L_cu % sp == 0, f"L_cu ({L_cu}) must be divisible by sp_degree ({sp})"
-        assert L_dn % sp == 0, f"L_dn ({L_dn}) must be divisible by sp_degree ({sp})"
+        N = self.world_size
+        assert L_cu % N == 0, f"L_cu ({L_cu}) must be divisible by world_size ({N})"
+        assert L_dn % N == 0, f"L_dn ({L_dn}) must be divisible by world_size ({N})"
         L_cu_sp = L_cu // sp
         L_dn_sp = L_dn // sp
+        L_cu_N = L_cu // N
+        L_dn_N = L_dn // N
+        L_full_N = L_full // N
 
         q_local, k_local, v_local = self._local_qkv_norm(x)
         q_full, k_full, v_full = self._gather_qkv(
             q_local, k_local, v_local, L_full)
 
+        n = self.num_heads
         d = self.head_dim
         n_local = self.heads_per_shard
+        h_start = self.tp_rank * n_local
+        h_end = h_start + n_local
 
         v_full_h = self._slice_heads_2d(v_full).contiguous()
 
-        q_full_4d = q_full.view(L_full, n_local, d)
-        k_full_4d = k_full.view(L_full, n_local, d)
+        q_full_4d = q_full.view(L_full, n, d)
+        k_full_4d = k_full.view(L_full, n, d)
         q_cu = q_full_4d[:L_cu].unsqueeze(0)
         q_dn = q_full_4d[L_cu:].unsqueeze(0)
         k_cu_full = k_full_4d[:L_cu].unsqueeze(0)
@@ -497,29 +461,33 @@ class CausalWanSelfAttention(nn.Module):
         rq_cu_full = self._nki_rope_apply(
             q_cu, grid_cu, freqs_cos, freqs_sin,
             start_frame=cu_sf_t, rope_grid_cache=rope_grid_cache,
-            start_frame_int=cu_sf_int)
+            start_frame_int=cu_sf_int,
+            head_start=h_start, head_end=h_end)
         rk_cu = self._nki_rope_apply(
             k_cu_full, grid_cu, freqs_cos, freqs_sin,
             start_frame=cu_sf_t, rope_grid_cache=rope_grid_cache,
-            start_frame_int=cu_sf_int)
+            start_frame_int=cu_sf_int,
+            head_start=h_start, head_end=h_end)
         rq_dn_full = self._nki_rope_apply(
             q_dn, grid_dn, freqs_cos, freqs_sin,
             start_frame=dn_sf_t, rope_grid_cache=rope_grid_cache,
-            start_frame_int=dn_sf_int)
+            start_frame_int=dn_sf_int,
+            head_start=h_start, head_end=h_end)
         rk_dn = self._nki_rope_apply(
             k_dn_full, grid_dn, freqs_cos, freqs_sin,
             start_frame=dn_sf_t, rope_grid_cache=rope_grid_cache,
-            start_frame_int=dn_sf_int)
+            start_frame_int=dn_sf_int,
+            head_start=h_start, head_end=h_end)
 
         if self._will_anchor_write(kv_cache, cache_update_start):
-            k_cu = k_full[:L_cu].view(L_cu, n_local, d).unsqueeze(0)
+            k_cu = self._slice_heads_2d(k_full[:L_cu]).contiguous().unsqueeze(0)
         else:
             k_cu = None
         le_cu, ls_cu = self._cache_write(
             k_cu, v_cu, rk_cu, kv_cache, cache_update_start, cu_shared_buffers)
 
         if self._will_anchor_write(kv_cache, current_start):
-            k_dn = k_full[L_cu:].view(L_dn, n_local, d).unsqueeze(0)
+            k_dn = self._slice_heads_2d(k_full[L_cu:]).contiguous().unsqueeze(0)
         else:
             k_dn = None
         le_dn, ls_dn = self._cache_write(
@@ -541,9 +509,28 @@ class CausalWanSelfAttention(nn.Module):
         y_cu = self._attend(q_cu_sp, cu_shared_buffers, klen_cu)
         y_dn = self._attend(q_dn_sp, dn_shared_buffers, klen_dn)
 
-        # O projection — RowParallelLinear handles all_reduce internally
-        out = self.o(torch.cat([y_cu, y_dn], dim=1))
-        return out
+        y = self.o(torch.cat([y_cu, y_dn], dim=1))
+
+        if tp > 1:
+            y = y.reshape(L_full // sp, self.dim)
+            y_cu_part = y[:L_cu_sp].reshape(tp, L_cu_N, self.dim)
+            y_dn_part = y[L_cu_sp:].reshape(tp, L_dn_N, self.dim)
+            rearranged = torch.cat([y_cu_part, y_dn_part], dim=1).reshape(-1, self.dim)
+            rs_out = torch.empty(L_full_N, self.dim, dtype=y.dtype, device=y.device)
+            ps.reduce_scatter_tensor(rs_out, rearranged, "attn-tp")
+            cu_dn_sep = rs_out
+        else:
+            cu_dn_sep = y.reshape(L_full_N, self.dim)
+
+        if N == 1:
+            return cu_dn_sep.unsqueeze(0)
+
+        gathered = torch.empty(N * L_full_N, self.dim, dtype=cu_dn_sep.dtype, device=cu_dn_sep.device)
+        ps.all_gather_into_tensor(gathered, cu_dn_sep, "world")
+        full = restore_layout(gathered, N=N)
+        rank_world = ps.get_rank("world")
+        out = full[rank_world * L_full_N:(rank_world + 1) * L_full_N]
+        return out.unsqueeze(0)
 
     def forward(
         self,
@@ -558,9 +545,6 @@ class CausalWanSelfAttention(nn.Module):
         num_valid_frames=None,
         shared_buffers=None,
         rope_grid_cache=None,
-        current_start_frame_t=None,
-        cache_update_start=None,
-        nfpb_cu=None,
     ):
         assert kv_cache is not None
         assert x.shape[0] == 1, f"Batch size must be 1, got {x.shape[0]}"
