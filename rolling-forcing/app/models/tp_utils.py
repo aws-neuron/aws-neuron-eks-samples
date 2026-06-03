@@ -368,6 +368,27 @@ def shard_qkv_norm(norm: nn.Module, tp_rank: int, tp_degree: int) -> nn.Module:
     return new_norm
 
 
+def _shard_norm_local(norm, tp_rank: int, tp_degree: int):
+    """Shard QK norm to local heads WITHOUT cross-rank all_reduce.
+
+    Each rank holds complete heads (head_dim=128 is never split across ranks).
+    RMSNorm over local features is correct per-head normalization since
+    features within a head are independent of features in other heads.
+    """
+    if not hasattr(norm, 'weight'):
+        return norm
+    from models.layers import WanRMSNorm
+
+    global_dim = norm.weight.shape[0]
+    local_dim = global_dim // tp_degree
+    start = tp_rank * local_dim
+    end = start + local_dim
+
+    new_norm = WanRMSNorm(local_dim, eps=norm.eps)
+    new_norm.weight = nn.Parameter(norm.weight.data[start:end].contiguous())
+    return new_norm
+
+
 def shard_model_tp(model, tp_rank: int, tp_degree: int):
     """Apply tensor parallelism sharding to a CausalWanModel in-place.
 
@@ -395,19 +416,20 @@ def shard_model_tp(model, tp_rank: int, tp_degree: int):
         # --- Self-Attention ---
         self_attn = block.self_attn
 
-        # Q, K, V: column-parallel (split output dim = split heads)
+        # Q, K, V: column-parallel (split heads)
         self_attn.q = shard_linear_column(self_attn.q, tp_rank, tp_degree)
         self_attn.k = shard_linear_column(self_attn.k, tp_rank, tp_degree)
         self_attn.v = shard_linear_column(self_attn.v, tp_rank, tp_degree)
 
-        # O: row-parallel (split input dim = each rank has local heads)
+        # O: row-parallel (all_reduce after local matmul)
         self_attn.o = shard_linear_row(self_attn.o, tp_rank, tp_degree)
 
-        # QK norms: shard to match local head count
-        self_attn.norm_q = shard_qkv_norm(self_attn.norm_q, tp_rank, tp_degree)
-        self_attn.norm_k = shard_qkv_norm(self_attn.norm_k, tp_rank, tp_degree)
+        # QK norms: use LOCAL RMSNorm (no cross-rank all_reduce).
+        # Each rank has complete heads (head_dim=128 not split), so
+        # per-rank RMS over local features is correct per-head normalization.
+        self_attn.norm_q = _shard_norm_local(self_attn.norm_q, tp_rank, tp_degree)
+        self_attn.norm_k = _shard_norm_local(self_attn.norm_k, tp_rank, tp_degree)
 
-        # Update num_heads to local count
         self_attn.num_heads = heads_per_rank
 
         # --- Cross-Attention ---
@@ -418,21 +440,17 @@ def shard_model_tp(model, tp_rank: int, tp_degree: int):
         cross_attn.v = shard_linear_column(cross_attn.v, tp_rank, tp_degree)
         cross_attn.o = shard_linear_row(cross_attn.o, tp_rank, tp_degree)
 
-        cross_attn.norm_q = shard_qkv_norm(cross_attn.norm_q, tp_rank, tp_degree)
-        cross_attn.norm_k = shard_qkv_norm(cross_attn.norm_k, tp_rank, tp_degree)
+        cross_attn.norm_q = _shard_norm_local(cross_attn.norm_q, tp_rank, tp_degree)
+        cross_attn.norm_k = _shard_norm_local(cross_attn.norm_k, tp_rank, tp_degree)
 
         cross_attn.num_heads = heads_per_rank
 
         # --- FFN ---
-        # FFN is nn.Sequential(Linear(dim, ffn_dim), GELU(), Linear(ffn_dim, dim))
-        # or WanFFN with .fc1 and .fc2
         ffn = block.ffn
         if hasattr(ffn, 'fc1'):
-            # WanFFN class
             ffn.fc1 = shard_linear_column(ffn.fc1, tp_rank, tp_degree)
             ffn.fc2 = shard_linear_row(ffn.fc2, tp_rank, tp_degree)
         elif isinstance(ffn, nn.Sequential):
-            # nn.Sequential(Linear, GELU, Linear)
             ffn[0] = shard_linear_column(ffn[0], tp_rank, tp_degree)
             ffn[2] = shard_linear_row(ffn[2], tp_rank, tp_degree)
         else:
