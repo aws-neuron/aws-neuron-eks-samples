@@ -257,8 +257,8 @@ class WanDiffusionWrapper(torch.nn.Module):
         )
         if num_layers is not None:
             kwargs["num_layers"] = num_layers
+        kwargs["ignore_mismatched_sizes"] = True
         if tp_degree > 1:
-            kwargs["ignore_mismatched_sizes"] = True
             _prev_verbosity = diffusers_logging.get_verbosity()
             diffusers_logging.set_verbosity_error()
         self.model = CausalWanModel.from_pretrained(
