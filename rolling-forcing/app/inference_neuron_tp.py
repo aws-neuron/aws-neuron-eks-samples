@@ -676,34 +676,40 @@ def run_server(state: PipelineState):
 # ─── Benchmark mode (no server) ──────────────────────────────────────────────
 
 def _run_single_generation(state: PipelineState, prompt: str, num_frames: int, seed: int):
-    """Run a single streaming generation, return (per_block, frame_arrays, t5_time).
+    """Run a single streaming generation on ALL ranks symmetrically.
 
-    This is the core generation loop extracted for reuse in warmup + benchmark runs.
+    All ranks execute the same code path. Only rank 0 collects frames/timing.
     """
+    rank = state.rank
     torch.manual_seed(seed)
     state.vae_model.model.clear_cache()
 
-    # Broadcast command + metadata to workers (streaming mode)
-    cmd = CMD_STREAM.to(NEURON_DEVICE)
-    dist.broadcast(cmd, src=0)
-    meta = torch.tensor([num_frames, seed, 0], dtype=torch.long, device=NEURON_DEVICE)
-    dist.broadcast(meta, src=0)
-
-    # Tokenize and broadcast
-    ids, mask = state.tokenizer([prompt], return_mask=True, add_special_tokens=True)
-    ids_device = ids.to(torch.long).to(NEURON_DEVICE)
-    mask_device = mask.to(torch.long).to(NEURON_DEVICE)
+    # T5 encoding: rank 0 tokenizes and broadcasts, T5_RANK encodes and broadcasts
+    if rank == 0:
+        ids, mask = state.tokenizer([prompt], return_mask=True, add_special_tokens=True)
+        ids_device = ids.to(torch.long).to(NEURON_DEVICE)
+        mask_device = mask.to(torch.long).to(NEURON_DEVICE)
+    else:
+        ids_device = torch.zeros(1, 512, dtype=torch.long, device=NEURON_DEVICE)
+        mask_device = torch.zeros(1, 512, dtype=torch.long, device=NEURON_DEVICE)
     dist.broadcast(ids_device, src=0)
     dist.broadcast(mask_device, src=0)
 
-    # Receive T5 embeddings
     t5_start = time.time()
-    prompt_embeds = torch.zeros(1, 512, 4096, dtype=torch.bfloat16, device=NEURON_DEVICE)
+    if rank == T5_RANK:
+        seq_len = mask_device.gt(0).sum(dim=1).long()
+        with torch.no_grad():
+            prompt_embeds = state.text_encoder(ids_device, mask_device)
+        prompt_embeds[0, seq_len[0]:] = 0.0
+        prompt_embeds = prompt_embeds.to(torch.bfloat16).contiguous()
+    else:
+        prompt_embeds = torch.zeros(1, 512, 4096, dtype=torch.bfloat16, device=NEURON_DEVICE)
     dist.broadcast(prompt_embeds, src=T5_RANK)
     t5_time = time.time() - t5_start
-    logger.info(f"  T5:          {t5_time*1000:7.1f} ms")
+    if rank == 0:
+        logger.info(f"  T5:          {t5_time*1000:7.1f} ms")
 
-    # Prepare noise
+    # Prepare noise (same seed on all ranks = same noise)
     noise = torch.randn(
         1, num_frames, 16, state.latent_h, state.latent_w,
         dtype=torch.bfloat16
@@ -741,8 +747,9 @@ def _run_single_generation(state: PipelineState, prompt: str, num_frames: int, s
             "n_frames": n_frames,
             "wall_s": time.time() - gen_start,
         })
-        block_fps = n_frames / block_e2e if block_e2e > 0 else 0
-        logger.info(f"  block {block_idx:2d}: DiT {dit_time*1000:7.1f} ms  VAE {vae_time*1000:6.1f} ms  {n_frames:2d} frames  {block_fps:5.2f} fps")
+        if rank == 0:
+            block_fps = n_frames / block_e2e if block_e2e > 0 else 0
+            logger.info(f"  block {block_idx:2d}: DiT {dit_time*1000:7.1f} ms  VAE {vae_time*1000:6.1f} ms  {n_frames:2d} frames  {block_fps:5.2f} fps")
         block_idx += 1
         last_yield_time = time.time()
 
@@ -751,10 +758,11 @@ def _run_single_generation(state: PipelineState, prompt: str, num_frames: int, s
 
 
 def run_benchmark(state: PipelineState):
-    """Rank 0: warmup (compile), then run 3x with measurement prompt, report FPS."""
+    """ALL ranks: warmup (compile), then run benchmark, report FPS (rank 0 only prints)."""
     import json
     from datetime import datetime
 
+    rank = state.rank
     num_frames = DEFAULT_NUM_FRAMES
     fps = DEFAULT_FPS
     num_benchmark_runs = int(os.environ.get("BENCHMARK_RUNS", "3"))
@@ -773,77 +781,82 @@ def run_benchmark(state: PipelineState):
         "sense of speed and agility. A medium shot with a slightly elevated camera angle."
     )
 
-    # Create timestamped run directory
+    # Create timestamped run directory (rank 0 only)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = os.environ.get("OUTPUT_DIR", f"/tmp/rf_run_{timestamp}")
     frames_dir = os.path.join(run_dir, "frames")
-    os.makedirs(frames_dir, exist_ok=True)
-    logger.info(f"Run output directory: {run_dir}")
-
-    logger.info("=" * 60)
-    logger.info("  ROLLING FORCING BENCHMARK")
-    logger.info(f"  Model: Wan2.1-T2V-1.3B | TP={TP_DEGREE} | Device: Trainium2")
-    logger.info(f"  Frames: {num_frames} | Benchmark runs: {num_benchmark_runs}")
-    logger.info("=" * 60)
-
-    # ── Phase 1: WARMUP (compilation) ─────────────────────────────────────────
-    logger.info("")
-    logger.info("=" * 60)
-    logger.info("  PHASE 1: WARMUP (triggers compilation)")
-    logger.info(f"  Prompt: {warmup_prompt[:60]}...")
-    logger.info("=" * 60)
+    if rank == 0:
+        os.makedirs(frames_dir, exist_ok=True)
+        logger.info(f"Run output directory: {run_dir}")
+        logger.info("=" * 60)
+        logger.info("  ROLLING FORCING BENCHMARK")
+        logger.info(f"  Model: Wan2.1-T2V-1.3B | TP={TP_DEGREE} | Device: Trainium2")
+        logger.info(f"  Frames: {num_frames} | Benchmark runs: {num_benchmark_runs}")
+        logger.info("=" * 60)
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("  PHASE 1: WARMUP (triggers compilation)")
+        logger.info(f"  Prompt: {warmup_prompt[:60]}...")
+        logger.info("=" * 60)
 
     warmup_start = time.time()
     warmup_blocks, _, _, warmup_gen_time, warmup_frames = _run_single_generation(
         state, warmup_prompt, num_frames, seed=42
     )
     compilation_time = time.time() - warmup_start
-    logger.info(f"  Warmup complete: {compilation_time:.1f}s ({warmup_frames} frames)")
-    logger.info(f"  Block 0 (compilation): {warmup_blocks[0]['block_total_ms']/1000:.1f}s")
-    if len(warmup_blocks) > 1:
-        warmup_steady = sum(b['block_total_ms'] for b in warmup_blocks[1:]) / (len(warmup_blocks)-1) / 1000
-        logger.info(f"  Blocks 1-{len(warmup_blocks)-1} avg: {warmup_steady:.3f}s/block")
+    if rank == 0:
+        logger.info(f"  Warmup complete: {compilation_time:.1f}s ({warmup_frames} frames)")
+        logger.info(f"  Block 0 (compilation): {warmup_blocks[0]['block_total_ms']/1000:.1f}s")
+        if len(warmup_blocks) > 1:
+            warmup_steady = sum(b['block_total_ms'] for b in warmup_blocks[1:]) / (len(warmup_blocks)-1) / 1000
+            logger.info(f"  Blocks 1-{len(warmup_blocks)-1} avg: {warmup_steady:.3f}s/block")
 
     # ── Phase 2: BENCHMARK (post-compilation measurement) ─────────────────────
-    logger.info("")
-    logger.info("=" * 60)
-    logger.info("  PHASE 2: BENCHMARK (post-compilation, no compile overhead)")
-    logger.info(f"  Prompt: {benchmark_prompt[:60]}...")
-    logger.info(f"  Runs: {num_benchmark_runs}")
-    logger.info("=" * 60)
+    if rank == 0:
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("  PHASE 2: BENCHMARK (post-compilation, no compile overhead)")
+        logger.info(f"  Prompt: {benchmark_prompt[:60]}...")
+        logger.info(f"  Runs: {num_benchmark_runs}")
+        logger.info("=" * 60)
 
     all_runs = []
     all_frame_arrays = []  # frames from last run for video output
 
     for run_idx in range(num_benchmark_runs):
         run_seed = 100 + run_idx
-        logger.info(f"  Run {run_idx+1}/{num_benchmark_runs} (seed={run_seed})...")
+        if rank == 0:
+            logger.info(f"  Run {run_idx+1}/{num_benchmark_runs} (seed={run_seed})...")
 
         per_block, frame_arrays, t5_time, gen_time, pixel_frames = _run_single_generation(
             state, benchmark_prompt, num_frames, seed=run_seed
         )
 
-        run_fps = pixel_frames / gen_time if gen_time > 0 else 0
-        avg_block_ms = sum(b['block_total_ms'] for b in per_block) / len(per_block)
-        avg_dit_ms = sum(b['dit_ms'] for b in per_block) / len(per_block)
-        avg_vae_ms = sum(b['vae_ms'] for b in per_block) / len(per_block)
+        if rank == 0:
+            run_fps = pixel_frames / gen_time if gen_time > 0 else 0
+            avg_block_ms = sum(b['block_total_ms'] for b in per_block) / len(per_block)
+            avg_dit_ms = sum(b['dit_ms'] for b in per_block) / len(per_block)
+            avg_vae_ms = sum(b['vae_ms'] for b in per_block) / len(per_block)
 
-        logger.info(f"    → {pixel_frames} frames in {gen_time:.2f}s = {run_fps:.2f} FPS")
-        logger.info(f"    → Avg block: {avg_block_ms:.0f}ms (DiT:{avg_dit_ms:.0f}ms + VAE:{avg_vae_ms:.0f}ms)")
+            logger.info(f"    → {pixel_frames} frames in {gen_time:.2f}s = {run_fps:.2f} FPS")
+            logger.info(f"    → Avg block: {avg_block_ms:.0f}ms (DiT:{avg_dit_ms:.0f}ms + VAE:{avg_vae_ms:.0f}ms)")
 
-        all_runs.append({
-            "run": run_idx,
-            "seed": run_seed,
-            "num_frames": pixel_frames,
-            "gen_time_s": gen_time,
-            "fps": run_fps,
-            "t5_time_s": t5_time,
-            "per_block": per_block,
-        })
+            all_runs.append({
+                "run": run_idx,
+                "seed": run_seed,
+                "num_frames": pixel_frames,
+                "gen_time_s": gen_time,
+                "fps": run_fps,
+                "t5_time_s": t5_time,
+                "per_block": per_block,
+            })
 
-        # Keep frames from last run for video output
-        if run_idx == num_benchmark_runs - 1:
-            all_frame_arrays = frame_arrays
+            if run_idx == num_benchmark_runs - 1:
+                all_frame_arrays = frame_arrays
+
+    # Workers are done — only rank 0 aggregates and prints results
+    if rank != 0:
+        return
 
     # ── Aggregate results across all benchmark runs ───────────────────────────
     total_benchmark_frames = sum(r["num_frames"] for r in all_runs)
@@ -1022,9 +1035,9 @@ def main():
         conditional_dict = {"prompt_embeds": prompt_embeds}
         latents = run_dit_inference(state, noise, conditional_dict)
 
-        # VAE decode (rank 0)
-        if rank == VAE_RANK and state.vae_model is not None:
-            decode_latents(state, latents)
+        # VAE decode (all ranks, width-sharded)
+        state.vae_model.model.clear_cache()
+        decode_latents_wshard(state, latents, 0)
 
         dist.barrier()
         if rank == 0:
@@ -1032,13 +1045,11 @@ def main():
             logger.info("  WARMUP COMPLETE — all kernels compiled")
             logger.info("=" * 60)
 
-    if rank == 0:
-        if args.benchmark:
-            run_benchmark(state)
-        else:
-            run_server(state)
+    if args.benchmark:
+        run_benchmark(state)
+    elif rank == 0:
+        run_server(state)
     else:
-        # Ranks 1-3 enter the worker loop
         worker_loop(state)
 
     # Cleanup
