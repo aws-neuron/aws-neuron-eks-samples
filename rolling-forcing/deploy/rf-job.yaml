@@ -26,7 +26,7 @@ spec:
             - |
               set -euxo pipefail
 
-              git clone -b forward-merged https://yahavb:${GITHUB_TOKEN}@github.com/aws-neuron/aws-neuron-eks-samples.git
+              git clone -b rolling-forcing-tp8-sp2 https://yahavb:${GITHUB_TOKEN}@github.com/aws-neuron/aws-neuron-eks-samples.git
               cd aws-neuron-eks-samples/rolling-forcing/app
               export RF_DEVICE_BACKEND=neuron
 
