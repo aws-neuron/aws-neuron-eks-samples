@@ -167,25 +167,18 @@ def load_pipeline(rank: int, world_size: int) -> PipelineState:
         logger.info(f"Spatial: {state.latent_h}x{state.latent_w}, frame_seq_length={state.frame_seq_length}")
 
     # ── Load T5 on T5_RANK (single rank for m-trn2 which has enough memory) ────
-    from wan.modules.tokenizers import HuggingfaceTokenizer
+    from models.t5 import (
+        build_text_encoder,
+        init_t5_parallel_group,
+        encode_one_prompt,
+    )
+    from utils.tokenizers import HuggingfaceTokenizer
 
-    if rank == T5_RANK:
-        logger.info(f"Loading T5 encoder (rank {T5_RANK}, eager)...")
-        from wan.modules.t5 import umt5_xxl
+    init_t5_parallel_group()
+    logger.info(f"Building T5 text encoder (rank {rank})...")
+    state.text_encoder = build_text_encoder(device="neuron")
+    logger.info(f"T5 loaded on Neuron (rank {rank})")
 
-        state.text_encoder = umt5_xxl(
-            encoder_only=True, return_tokenizer=False,
-            dtype=torch.bfloat16, device=torch.device('cpu')
-        ).eval().requires_grad_(False)
-
-        weights_path = os.path.join(MODEL_PATH, "models_t5_umt5-xxl-enc-bf16.pth")
-        state.text_encoder.load_state_dict(
-            torch.load(weights_path, map_location='cpu', weights_only=False)
-        )
-        state.text_encoder = state.text_encoder.to(NEURON_DEVICE)
-        logger.info(f"T5 loaded on Neuron (rank {T5_RANK}, eager)")
-
-    # All ranks need the tokenizer (lightweight, CPU-only)
     tokenizer_path = os.path.join(MODEL_PATH, "google/umt5-xxl/")
     state.tokenizer = HuggingfaceTokenizer(name=tokenizer_path, seq_len=512, clean='whitespace')
 
@@ -637,27 +630,11 @@ def _run_single_generation(state: PipelineState, prompt: str, num_frames: int, s
     torch.manual_seed(seed)
     state.vae_model.model.clear_cache()
 
-    # T5 encoding: rank 0 tokenizes and broadcasts, T5_RANK encodes and broadcasts
-    if rank == 0:
-        ids, mask = state.tokenizer([prompt], return_mask=True, add_special_tokens=True)
-        ids_device = ids.to(torch.long).to(NEURON_DEVICE)
-        mask_device = mask.to(torch.long).to(NEURON_DEVICE)
-    else:
-        ids_device = torch.zeros(1, 512, dtype=torch.long, device=NEURON_DEVICE)
-        mask_device = torch.zeros(1, 512, dtype=torch.long, device=NEURON_DEVICE)
-    dist.broadcast(ids_device, src=0)
-    dist.broadcast(mask_device, src=0)
+    # T5 encoding: all ranks participate via T5 parallel group
+    from models.t5 import encode_one_prompt
 
     t5_start = time.time()
-    if rank == T5_RANK:
-        seq_len = mask_device.gt(0).sum(dim=1).long()
-        with torch.no_grad():
-            prompt_embeds = state.text_encoder(ids_device, mask_device)
-        prompt_embeds[0, seq_len[0]:] = 0.0
-        prompt_embeds = prompt_embeds.to(torch.bfloat16).contiguous()
-    else:
-        prompt_embeds = torch.zeros(1, 512, 4096, dtype=torch.bfloat16, device=NEURON_DEVICE)
-    dist.broadcast(prompt_embeds, src=T5_RANK)
+    prompt_embeds = encode_one_prompt(state.text_encoder, prompt)
     t5_time = time.time() - t5_start
     if rank == 0:
         logger.info(f"  T5:          {t5_time*1000:7.1f} ms")
