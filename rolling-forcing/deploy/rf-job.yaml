@@ -218,6 +218,8 @@ spec:
             - name: 621547421844-ap-southeast-4-pvc
               mountPath: /var/mdl
           env:
+            - name: NKI_DUMP_PERSISTENT_CACHE
+              value: "1"
             - name: PYTHONUNBUFFERED
               value: "1"
             - name: NEURON_RT_LOG_LEVEL

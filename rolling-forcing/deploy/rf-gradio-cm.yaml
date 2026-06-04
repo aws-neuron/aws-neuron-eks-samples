@@ -41,7 +41,7 @@ data:
     def generate_streaming(prompt, progress=gr.Progress()):
         """Generate video with streaming frames via Server-Sent Events."""
         import os as _os
-        num_frames = int(_os.environ.get("DEFAULT_NUM_FRAMES", "81"))
+        num_frames = int(_os.environ.get("DEFAULT_NUM_FRAMES", "21"))
         # Immediately disable the button on click
         yield [], None, "⏳ Starting...", gr.update(interactive=False)
 

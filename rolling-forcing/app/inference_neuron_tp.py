@@ -481,6 +481,7 @@ def run_server(state: PipelineState):
         immediately and sent to the client as SSE frames.
         """
         num_frames = request.num_frames or DEFAULT_NUM_FRAMES
+        pixel_frames = (num_frames - 1) * 4 + 1
         seed = request.seed or 0
 
         torch.manual_seed(seed)
@@ -522,9 +523,9 @@ def run_server(state: PipelineState):
                         data = {
                             "frame_index": frame_count,
                             "frame": frame_b64,
-                            "total_frames": num_frames
+                            "total_frames": pixel_frames
                         }
-                        logger.info(f"[Stream] Sending frame {frame_count}/{num_frames}")
+                        logger.info(f"[Stream] Sending frame {frame_count}/{pixel_frames}")
                         yield f"data: {json.dumps(data)}\n\n"
                         frame_count += 1
                         await asyncio.sleep(0)
@@ -883,17 +884,20 @@ def main():
         from models.t5 import encode_one_prompt
         prompt_embeds = encode_one_prompt(state.text_encoder, warmup_prompt)
 
-        # DiT inference (all ranks participate via TP)
+        # DiT streaming inference + per-block VAE decode (matches serving path)
         noise = torch.randn(
             1, warmup_num_frames, 16, state.latent_h, state.latent_w,
             dtype=torch.bfloat16
         ).to(NEURON_DEVICE)
         conditional_dict = {"prompt_embeds": prompt_embeds}
-        latents = run_dit_inference(state, noise, conditional_dict)
 
-        # VAE decode (all ranks, width-sharded)
         state.vae_model.model.clear_cache()
-        decode_latents_wshard(state, latents, 0)
+        block_idx = 0
+        for latent_block in state.dit_pipeline.inference_rolling_forcing_stream(
+            noise, conditional_dict
+        ):
+            decode_latents_wshard(state, latent_block, block_idx)
+            block_idx += 1
 
         dist.barrier()
         if rank == 0:
