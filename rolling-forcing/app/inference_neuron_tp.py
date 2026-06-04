@@ -231,48 +231,6 @@ CMD_SHUTDOWN = torch.tensor([99], dtype=torch.long)
 CMD_IDLE = torch.tensor([0], dtype=torch.long)
 
 
-def encode_prompt_distributed(state: PipelineState, prompt: str) -> torch.Tensor:
-    """Encode text prompt using T5 on rank T5_RANK, broadcast result to all.
-
-    Flow:
-      1. Rank 0 tokenizes (CPU, fast) and broadcasts token IDs + mask
-      2. Rank T5_RANK runs T5 on Neuron and broadcasts embeddings
-      3. All ranks receive embeddings for DiT
-
-    Returns prompt_embeds on NEURON_DEVICE for the calling rank.
-    """
-    rank = state.rank
-
-    # Step 1: Rank 0 tokenizes and broadcasts IDs + mask to all ranks
-    if rank == 0:
-        ids, mask = state.tokenizer([prompt], return_mask=True, add_special_tokens=True)
-        ids = ids.to(torch.long)
-        mask = mask.to(torch.long)
-    else:
-        # Allocate buffers for receiving (tokenizer always produces [1, 512])
-        ids = torch.zeros(1, 512, dtype=torch.long)
-        mask = torch.zeros(1, 512, dtype=torch.long)
-
-    # Broadcast token IDs and mask from rank 0 to all (on Neuron device)
-    ids_device = ids.to(NEURON_DEVICE)
-    mask_device = mask.to(NEURON_DEVICE)
-    dist.broadcast(ids_device, src=0)
-    dist.broadcast(mask_device, src=0)
-
-    # Step 2: Rank T5_RANK encodes with T5 on Neuron
-    if rank == T5_RANK:
-        seq_len = mask_device.gt(0).sum(dim=1).long()
-        with torch.no_grad():
-            prompt_embeds = state.text_encoder(ids_device, mask_device)
-        prompt_embeds[0, seq_len[0]:] = 0.0
-        prompt_embeds = prompt_embeds.to(torch.bfloat16).contiguous()
-    else:
-        prompt_embeds = torch.zeros(1, 512, 4096, dtype=torch.bfloat16, device=NEURON_DEVICE)
-
-    # Step 3: Broadcast embeddings from T5_RANK to all ranks
-    dist.broadcast(prompt_embeds, src=T5_RANK)
-
-    return prompt_embeds
 
 
 def w_shard(tensor, rank, world):
