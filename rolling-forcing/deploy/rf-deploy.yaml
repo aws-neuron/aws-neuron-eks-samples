@@ -155,7 +155,7 @@ spec:
             - name: USE_NEFF_CACHE
               value: "false"
             - name: WARMUP_FRAMES
-              value: "6"
+              value: "15"
             - name: VALIDATE_PIPELINE
               value: "1"
             - name: CONFIG_PATH
@@ -167,7 +167,7 @@ spec:
             - name: CHECKPOINT_PATH
               value: "checkpoints/rolling_forcing_dmd.pt"
             - name: DEFAULT_NUM_FRAMES
-              value: "6"
+              value: "15"
             - name: DEFAULT_FPS
               value: "16"
             - name: TP_DEGREE

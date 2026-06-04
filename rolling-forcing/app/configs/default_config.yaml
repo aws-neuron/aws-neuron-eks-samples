@@ -23,14 +23,14 @@ eval_first_n: 64
 num_samples: 1
 height: 480
 width: 832
-num_frames: 21
+num_frames: 57
 
 # Full resolution: 60x104 latent -> 480x832 video
 # frame_seq_length = (60*104)//4 = 1560
 # W=104 divisible by 8 for width-sharded VAE
 image_or_video_shape:
 - 1
-- 6
+- 15
 - 16
 - 60
 - 104

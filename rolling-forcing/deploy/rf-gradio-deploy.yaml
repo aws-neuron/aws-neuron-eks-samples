@@ -54,7 +54,7 @@ spec:
               readOnly: true
           env:
             - name: DEFAULT_NUM_FRAMES
-              value: "6"
+              value: "15"
           ports:
             - containerPort: 8000
               protocol: TCP
