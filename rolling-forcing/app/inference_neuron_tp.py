@@ -388,7 +388,7 @@ def run_server(state: PipelineState):
 
     class GenerateRequest(BaseModel):
         prompt: str
-        num_frames: Optional[int] = Field(default=None, ge=9, le=481)
+        num_frames: Optional[int] = Field(default=None, ge=3, le=481)
         seed: Optional[int] = Field(default=None)
         fps: Optional[int] = Field(default=None, ge=1, le=60)
 
