@@ -363,25 +363,17 @@ def worker_loop(state: PipelineState):
 
             torch.manual_seed(seed)
 
-            # All ranks participate in distributed T5 encoding:
-            # - Receive token IDs broadcast from rank 0
-            # - Rank T5_RANK runs T5 encoder
-            # - Rank T5_RANK broadcasts embeddings to all
-            ids_device = torch.zeros(1, 512, dtype=torch.long, device=NEURON_DEVICE)
-            mask_device = torch.zeros(1, 512, dtype=torch.long, device=NEURON_DEVICE)
-            dist.broadcast(ids_device, src=0)
-            dist.broadcast(mask_device, src=0)
-
-            if rank == T5_RANK:
-                seq_len = mask_device.gt(0).sum(dim=1).long()
-                with torch.no_grad():
-                    prompt_embeds = state.text_encoder(ids_device, mask_device)
-                prompt_embeds[0, seq_len[0]:] = 0.0
-                prompt_embeds = prompt_embeds.to(torch.bfloat16).contiguous()
-            else:
-                prompt_embeds = torch.zeros(1, 512, 4096, dtype=torch.bfloat16, device=NEURON_DEVICE)
-
-            dist.broadcast(prompt_embeds, src=T5_RANK)
+            # All ranks participate in T5 encoding via parallel group
+            # Receive prompt from rank 0 via metadata broadcast
+            from models.t5 import encode_one_prompt
+            prompt_len = torch.zeros(1, dtype=torch.long, device=NEURON_DEVICE)
+            dist.broadcast(prompt_len, src=0)
+            prompt_ids = torch.zeros(prompt_len.item(), dtype=torch.long, device=NEURON_DEVICE)
+            dist.broadcast(prompt_ids, src=0)
+            # Decode prompt bytes back to string
+            prompt_bytes = bytes(prompt_ids.cpu().tolist())
+            prompt_text = prompt_bytes.decode('utf-8')
+            prompt_embeds = encode_one_prompt(state.text_encoder, prompt_text)
 
             # Generate noise (deterministic from seed)
             noise = torch.randn(
@@ -448,13 +440,20 @@ def run_server(state: PipelineState):
         execution_time: float
         num_frames: int
 
-    def broadcast_command_and_meta(num_frames: int, seed: int, stream: bool = False):
-        """Broadcast command and metadata to all TP ranks."""
+    def broadcast_command_and_meta(num_frames: int, seed: int, prompt: str, stream: bool = False):
+        """Broadcast command, metadata, and prompt to all TP ranks."""
         cmd = (CMD_STREAM if stream else CMD_GENERATE).to(NEURON_DEVICE)
         dist.broadcast(cmd, src=0)
 
         meta = torch.tensor([num_frames, seed, 0], dtype=torch.long, device=NEURON_DEVICE)
         dist.broadcast(meta, src=0)
+
+        # Broadcast prompt string as bytes
+        prompt_bytes = prompt.encode('utf-8')
+        prompt_len = torch.tensor([len(prompt_bytes)], dtype=torch.long, device=NEURON_DEVICE)
+        dist.broadcast(prompt_len, src=0)
+        prompt_ids = torch.tensor(list(prompt_bytes), dtype=torch.long, device=NEURON_DEVICE)
+        dist.broadcast(prompt_ids, src=0)
 
     @app.post("/generate", response_model=GenerateResponse)
     async def generate_video(request: GenerateRequest):
@@ -466,19 +465,12 @@ def run_server(state: PipelineState):
         start_time = time.time()
 
         try:
-            # Step 1: Broadcast command + metadata to workers
-            broadcast_command_and_meta(num_frames, seed, stream=False)
+            # Step 1: Broadcast command + metadata + prompt to workers
+            broadcast_command_and_meta(num_frames, seed, prompt=request.prompt, stream=False)
 
-            # Step 2: Tokenize and broadcast IDs (rank 0 → all)
-            ids, mask = state.tokenizer([request.prompt], return_mask=True, add_special_tokens=True)
-            ids_device = ids.to(torch.long).to(NEURON_DEVICE)
-            mask_device = mask.to(torch.long).to(NEURON_DEVICE)
-            dist.broadcast(ids_device, src=0)
-            dist.broadcast(mask_device, src=0)
-
-            # Step 3: Receive embeddings from T5_RANK
-            prompt_embeds = torch.zeros(1, 512, 4096, dtype=torch.bfloat16, device=NEURON_DEVICE)
-            dist.broadcast(prompt_embeds, src=T5_RANK)
+            # Step 2: T5 encode (all ranks via parallel group)
+            from models.t5 import encode_one_prompt
+            prompt_embeds = encode_one_prompt(state.text_encoder, request.prompt)
 
             # Step 4: DiT inference (all ranks in sync)
             noise = torch.randn(
@@ -538,19 +530,12 @@ def run_server(state: PipelineState):
         async def generate_frames():
             import json
             try:
-                # Step 1: Broadcast command + metadata
-                broadcast_command_and_meta(num_frames, seed, stream=True)
+                # Step 1: Broadcast command + metadata + prompt
+                broadcast_command_and_meta(num_frames, seed, prompt=request.prompt, stream=True)
 
-                # Step 2: Tokenize and broadcast IDs
-                ids, mask = state.tokenizer([request.prompt], return_mask=True, add_special_tokens=True)
-                ids_device = ids.to(torch.long).to(NEURON_DEVICE)
-                mask_device = mask.to(torch.long).to(NEURON_DEVICE)
-                dist.broadcast(ids_device, src=0)
-                dist.broadcast(mask_device, src=0)
-
-                # Step 3: Receive embeddings from T5_RANK
-                prompt_embeds = torch.zeros(1, 512, 4096, dtype=torch.bfloat16, device=NEURON_DEVICE)
-                dist.broadcast(prompt_embeds, src=T5_RANK)
+                # Step 2: T5 encode (all ranks via parallel group)
+                from models.t5 import encode_one_prompt
+                prompt_embeds = encode_one_prompt(state.text_encoder, request.prompt)
 
                 # Step 4: Prepare noise
                 noise = torch.randn(
@@ -561,12 +546,14 @@ def run_server(state: PipelineState):
                 conditional_dict = {"prompt_embeds": prompt_embeds}
 
                 # Step 5: TRUE streaming — yields finalized blocks during DiT inference
+                state.vae_model.model.clear_cache()
                 frame_count = 0
+                block_idx = 0
                 for latent_block in state.dit_pipeline.inference_rolling_forcing_stream(
                     noise, conditional_dict
                 ):
-                    # latent_block: [B, nfpb, C, H, W] — decode immediately
-                    frames_np = decode_latents(state, latent_block.cpu())
+                    frames_np = decode_latents_wshard(state, latent_block, block_idx)
+                    block_idx += 1
 
                     for i, frame_np in enumerate(frames_np):
                         img = Image.fromarray(frame_np)
