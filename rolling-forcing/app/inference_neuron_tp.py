@@ -520,11 +520,11 @@ def run_server(state: PipelineState):
                         frame_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
 
                         data = {
-                            "frame_index": start_frame + i,
+                            "frame_index": frame_count,
                             "frame": frame_b64,
                             "total_frames": num_frames
                         }
-                        logger.info(f"[Stream] Sending frame {start_frame + i}/{num_frames}")
+                        logger.info(f"[Stream] Sending frame {frame_count}/{num_frames}")
                         yield f"data: {json.dumps(data)}\n\n"
                         frame_count += 1
                         await asyncio.sleep(0)
