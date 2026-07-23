@@ -1,0 +1,188 @@
+# Disaggregated Inference — DECODE server (kv_consumer), 1P1D on Neuron.
+# vLLM Neuron plugin, split kv_producer/kv_consumer roles, NIXL/LIBFABRIC over EFA.
+#
+# Symmetric with prefill: TP=8 = 8 logical cores (LNC=2) = 8 chips + 8 EFA from one
+# devicegroup8 (xl-lnc2-trn2-efa-rct.yaml). Uses a DIFFERENT NIXL side-channel port
+# (5659) than prefill (5559) so the two can co-reside on one node.
+#
+# Deploy:  kubectl apply -f decode-deploy.yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: decode
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: decode
+  template:
+    metadata:
+      labels:
+        app: decode                       # production-stack: --k8s-label-selector "app in (prefill,decode)"
+        model: decode                     # production-stack: --decode-model-labels=decode
+        role-name: decode                 # AIBrix pd router filters on this (pd_disaggregation.go)
+        roleset-name: default             # AIBrix: pairs prefill+decode
+        model.aibrix.ai/name: "gpt-oss-20b"   # AIBrix model discovery (label)
+        model.aibrix.ai/port: "8000"
+        model.aibrix.ai/engine: "vllm"
+      annotations:
+        model.aibrix.ai/name: "gpt-oss-20b"   # AIBrix model-name fallback (annotation)
+        model.aibrix.ai/port: "8000"          # AIBrix: vLLM serving port
+    spec:
+      # Land on an EFA-enabled Trn2 node. To force prefill+decode onto the SAME
+      # node (single-node 1P1D), pin both to one host with a
+      # kubernetes.io/hostname selector instead.
+      nodeSelector:
+        node-type: trn2
+      resourceClaims:
+        # 8 chips = 8 logical cores (LNC=2) → TP=8, PLUS 8 EFA devices, all from
+        # one devicegroup8. See xl-lnc2-trn2-efa-rct.yaml.
+        - name: neurons
+          resourceClaimTemplateName: xl-lnc2-trn2-efa
+      containers:
+        - name: app
+          image: public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.21.0.1.0.0-neuronx-py313-sdk2.31.0-ubuntu24.04
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+          startupProbe:                    # first-run Neuron compile can take many minutes
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 30
+            timeoutSeconds: 50
+            failureThreshold: 570
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 60
+            successThreshold: 1
+            failureThreshold: 3
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 60
+            successThreshold: 1
+            failureThreshold: 3
+            timeoutSeconds: 5
+          resources:
+            claims:
+              - name: neurons
+            requests:
+              cpu: 90
+              memory: 900Gi
+            limits:
+              cpu: 90
+              memory: 900Gi
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            # Node-local disk for HF weights + NEFF compile cache. NOT the S3
+            # PVC: mountpoint-s3 has no atomic rename (os.replace → ENOSYS /
+            # Errno 38), which the HuggingFace downloader requires.
+            - name: cache
+              mountPath: /cache
+          env:
+            - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+              value: "0.0.0.0"
+            - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+              value: "5659"                # different from prefill (5559) — shared host
+            - name: CUDA_VISIBLE_DEVICES
+              value: ""
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: VLLM_LOGGING_LEVEL
+              value: "INFO"
+            - name: VLLM_NEURON_LOG_LEVEL
+              value: "INFO"
+            - name: VLLM_RPC_TIMEOUT
+              value: "100000"
+            # Caches on node-local disk (see cache volume note above).
+            - name: HF_HOME
+              value: "/cache/hf-cache"
+            - name: VLLM_CACHE_ROOT
+              value: "/cache/vllm-cache"
+            - name: MODEL_ID
+              value: "openai/gpt-oss-20b"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+          command:
+            - /bin/bash
+            - "-exc"
+            - |
+              set -x
+              # --- NiXL LIBFABRIC enablement on Neuron ---------------------
+              # The DLC ships nixl_cu13, whose libplugin_LIBFABRIC.so is linked
+              # against the CUDA driver (undefined symbols cuCtxSetCurrent,
+              # cuDeviceGetPCIBusId, cuPointerGetAttributes). Trainium has no
+              # libcuda, so the plugin fails to dlopen and NiXL reports the
+              # LIBFABRIC backend as unsupported. These 3 symbols are never
+              # called on the EFA transfer path, so a no-op libcuda.so.1 stub
+              # lets the plugin load. Then point NIXL_PLUGIN_DIR + LD_LIBRARY_PATH
+              # at the cu13 plugins, sibling libs, cudart, and EFA libfabric.
+              mkdir -p /opt/nixlstub
+              cat > /tmp/cuda_stub.c <<'CSTUB'
+              int cuCtxSetCurrent(void *ctx){return 0;}
+              int cuDeviceGetPCIBusId(char *s,int len,int dev){if(s&&len)s[0]=0;return 0;}
+              int cuPointerGetAttributes(unsigned int n,void *a,unsigned long long p){return 0;}
+              CSTUB
+              cc -shared -fPIC -o /opt/nixlstub/libcuda.so.1 /tmp/cuda_stub.c
+              SP=/opt/conda/lib/python3.13/site-packages
+              export NIXL_PLUGIN_DIR=$SP/nixl_cu13.libs/nixl
+              export LD_LIBRARY_PATH=/opt/nixlstub:$SP/nixl_cu13.libs:$SP/nixl_cu13.libs/nixl:$SP/.nixl_cu13.mesonpy.libs:$SP/nvidia/cu13/lib:/opt/amazon/efa/lib:$LD_LIBRARY_PATH
+
+              # --- Force NiXL DRAM memory type on Neuron -------------------
+              # This image's _NIXL_SUPPORTED_DEVICE['neuron']={'cuda'} accepts
+              # only kv_buffer_device="cuda", and NeuronPlatform doesn't override
+              # get_nixl_memory_type() (returns None), so worker.py forces "VRAM"
+              # — which the LIBFABRIC backend rejects on Trainium ("Memory type 1
+              # is not supported"). Patch the installed worker so it registers
+              # DRAM instead. NEURON_RT_MAP_HBM=1 maps device HBM into host-
+              # registerable space so libfabric can register the KV addresses.
+              export NEURON_RT_MAP_HBM=1
+              WK=$SP/vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py
+              sed -i 's/nixl_memory_type = "VRAM"/nixl_memory_type = "DRAM"/' "$WK"
+              grep -n 'nixl_memory_type = "DRAM"' "$WK" || { echo "PATCH FAILED"; exit 1; }
+
+              # Step 2: launch the decode server (kv_consumer role). Symmetric
+              # TP=8 (no DP) so it fits alongside prefill on one 8-chip node.
+              vllm serve "$MODEL_ID" \
+                --served-model-name gpt-oss-20b \
+                --port 8000 \
+                --tensor-parallel-size 8 \
+                --max-num-seqs 4 \
+                --max-model-len 8192 \
+                --max-num-batched-tokens 8192 \
+                --no-enable-chunked-prefill \
+                --no-enable-prefix-caching \
+                --additional-config '{"nixl_side_channel_port": 5659, "neuron_config": {"on_device_sampling_config": {"all_greedy": true}, "num_batched_tokens_buckets": [8192], "num_seqs_buckets": [4]}}' \
+                --kv-transfer-config '{"kv_connector": "NeuronNixlConnector", "kv_role": "kv_consumer", "kv_buffer_device": "cuda", "kv_connector_extra_config": {"backends": ["LIBFABRIC"]}}' \
+                --hf-overrides '{"quantization_config": {}}'
+                # gpt-oss ships MXFP4-quantized; strip quantization_config so it
+                # loads in bf16 (gpt_oss_mxfp4 unsupported on Neuron SDK 2.31).
+
+              while true; do sleep 3600; done
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 128Gi
+        - name: cache
+          emptyDir:
+            sizeLimit: 200Gi
