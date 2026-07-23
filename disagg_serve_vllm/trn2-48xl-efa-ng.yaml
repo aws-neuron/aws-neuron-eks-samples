@@ -1,0 +1,33 @@
+# trn2.48xlarge nodegroup with EFA + Capacity Reservation.
+# EFA is required for the NIXL/LIBFABRIC KV-cache transfer between prefill and
+# decode pods. Trn EFA capacity is typically obtained via an on-demand capacity
+# reservation (ODCR) — set capacityReservationID and the matching subnet (AZ) below.
+# For Trn3, change instanceType to trn3-dev1.48xlarge.
+#
+# Create: eksctl create nodegroup -f trn2-48xl-efa-ng.yaml
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: my-di-cluster
+  region: us-east-1        # match cluster.yaml
+
+nodeGroups:
+  - name: trn2-48xl-efa
+    instanceType: trn2.48xlarge
+    minSize: 0
+    maxSize: 8
+    desiredCapacity: 1
+    privateNetworking: true          # EFA requires private networking
+    efaEnabled: true                 # attach the EFA network interfaces
+    volumeSize: 512
+    volumeType: gp3
+    labels:
+      node-type: trn2
+      efa-enabled: "true"
+    subnets:
+      - <subnet-in-your-CR-AZ>       # subnet in the same AZ as the capacity reservation
+    capacityReservation:
+      capacityReservationTarget:
+        capacityReservationID: <your-capacity-reservation-id>   # e.g. cr-0123456789abcdef0

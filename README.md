@@ -22,6 +22,7 @@ Samples are organized by use case below:
 | [Flux inference](flux_serve) | FLUX.1 dev Inference workflow for creating an inference endpoint forwarded by ALB LoadBalancer powered by Karpenter's NodePool and S3 mountpoints | Trn1/Inf2 |
 | [Optimal TP/DP for LLM serving](tp_dp_trn2_vllm) | Demonstrates optimal tensor parallelism configuration for LLM serving with vLLM, comparing TP1, TP2, and TP4 performance on Qwen models | Trn2 |
 | [Speculative decoding](speculative_decoding_trn2_vllm) | Accelerate LLM inference using speculative decoding with vLLM, comparing baseline vs draft model performance with Neuron DRA and S3 persistence | Trn2 |
+| [Disaggregated inference](disagg_serve_vllm) | Prefill/decode disaggregated serving with vLLM, using DRA for Neuron + EFA allocation and NIXL/LIBFABRIC KV transfer; dynamic xPyD scaling routed by [vLLM production-stack](https://github.com/vllm-project/production-stack) or [AIBrix](https://github.com/vllm-project/aibrix) | Trn2/Trn3 |
 
 ## Getting Help
 

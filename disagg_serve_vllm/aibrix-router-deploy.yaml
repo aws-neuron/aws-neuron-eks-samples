@@ -1,0 +1,91 @@
+# =============================================================================
+# AIBrix P/D routing for Neuron/trn2 disaggregated inference — WORKING SETUP
+# Based on: https://github.com/vllm-project/aibrix/pull/1894 (merged; shipped in v0.7.0)
+#
+# AIBrix routing is NOT a router pod like production-stack's router-deploy.yaml.
+# It's the cluster-wide gateway (aibrix-gateway-plugins in aibrix-system),
+# configured via the ROUTING_ALGORITHM=pd env var. The pd (prefill/decode)
+# router IS already in the v0.7.0 release image — no custom build needed
+# (confirmed: gateway log shows pd_disaggregation.go initializing).
+#
+# This file has two parts:
+#   PART A  imperative install/config — RUN the commands (do NOT kubectl apply -f)
+#   PART B  declarative resources     — kubectl apply -f applies these
+#
+# Prereqs in this cluster:
+#   - prefill-deploy.yaml / decode-deploy.yaml applied, pods Ready, carrying
+#     labels role-name: prefill|decode, model.aibrix.ai/name, model.aibrix.ai/port
+#   - Model served as gpt-oss-20b on port 8000
+# =============================================================================
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PART A — install AIBrix (latest release v0.7.0) and enable pd routing.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+#   # 1. Standard AIBrix install (verbatim from upstream release).
+#   kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-dependency-v0.7.0.yaml --server-side
+#   kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-core-crds-v0.7.0.yaml --server-side
+#   kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-core-v0.7.0.yaml
+#   kubectl wait --for=condition=Available --timeout=5m deployment/aibrix-gateway-plugins    -n aibrix-system
+#   kubectl wait --for=condition=Available --timeout=5m deployment/aibrix-controller-manager -n aibrix-system
+#
+#   # 2. Enable pd (prefill/decode) routing + prefill timeout (gpt-oss can be slow).
+#   #    NOTE: ROUTING_ALGORITHM, not AIBRIX_ROUTING_ALGORITHM.
+#   kubectl set env deployment/aibrix-gateway-plugins -n aibrix-system ROUTING_ALGORITHM=pd
+#   kubectl set env deployment/aibrix-gateway-plugins -n aibrix-system AIBRIX_PREFILL_REQUEST_TIMEOUT=600
+#   kubectl rollout status deployment/aibrix-gateway-plugins -n aibrix-system
+#
+#   # 3. Apply PART B resources (ModelAdapter + Envoy backend timeout).
+#   kubectl apply -f aibrix-router-deploy.yaml
+#
+#   # 4. Deploy the prefill/decode servers (must have the role-name labels).
+#   kubectl apply -f prefill-deploy.yaml -f decode-deploy.yaml
+#   kubectl get pods -l 'role-name in (prefill,decode)'
+#
+#   # 5. Test through the Envoy gateway (svc name from: kubectl get svc -n envoy-gateway-system).
+#   kubectl run test --rm -it --image=curlimages/curl --restart=Never -- \
+#     curl -sS -X POST \
+#     "http://<envoy-eg-svc>.envoy-gateway-system:80/v1/completions" \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"gpt-oss-20b","prompt":"Count the numbers 1, 2, 3","max_tokens":50}'
+#
+# Verify routing:
+#   kubectl logs -l role-name=prefill --since=1m
+#   kubectl logs -l role-name=decode  --since=1m
+#   kubectl logs deployment/aibrix-gateway-plugins -n aibrix-system --since=1m | grep -i pd
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PART B — declarative resources (applied by kubectl apply -f)
+# ─────────────────────────────────────────────────────────────────────────────
+---
+# Backend timeout so long prefill/decode requests aren't cut off by Envoy.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: aibrix-backend-timeout
+  namespace: aibrix-system
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: aibrix-reserved-router
+  timeout:
+    http:
+      connectionIdleTimeout: 600s
+      maxConnectionDuration: 600s
+      requestTimeout: 600s
+---
+# Registers the model with AIBrix and ties it to the prefill role pods.
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelAdapter
+metadata:
+  name: gpt-oss-20b
+  namespace: default
+  labels:
+    model.aibrix.ai/name: gpt-oss-20b
+spec:
+  baseModel: gpt-oss-20b
+  artifactURL: "huggingface://openai/gpt-oss-20b"
+  podSelector:
+    matchLabels:
+      role-name: prefill

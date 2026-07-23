@@ -1,0 +1,40 @@
+# EKS cluster for disaggregated inference on AWS Neuron.
+# A small general-purpose (m5) managed nodegroup runs system/router pods; the
+# Trn2/Trn3 EFA nodegroup (see trn2-48xl-efa-ng.yaml) is added separately.
+#
+# Create: eksctl create cluster -f cluster.yaml
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: my-di-cluster
+  region: us-east-1        # set to a region where your Trn2/Trn3 capacity lives
+  version: "1.35"
+
+vpc:
+  nat:
+    gateway: Single
+  clusterEndpoints:
+    publicAccess: true
+    privateAccess: true
+
+managedNodeGroups:
+  - name: general-m5xl-ng
+    instanceType: m5.xlarge
+    desiredCapacity: 2
+    minSize: 2
+    maxSize: 3
+    privateNetworking: true
+    amiFamily: AmazonLinux2023
+    labels:
+      node-type: m5
+
+addons:
+  - name: vpc-cni
+  - name: coredns
+  - name: kube-proxy
+  - name: metrics-server
+  - name: aws-mountpoint-s3-csi-driver
+  - name: eks-node-monitoring-agent
+  - name: fluent-bit
