@@ -1,0 +1,34 @@
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: xl-lnc2-trn2-efa
+spec:
+  spec:
+    devices:
+      constraints:
+      - matchAttribute: resource.aws.com/devicegroup8_id
+        requests:
+        - neurons
+        - efas
+      requests:
+      - name: neurons
+        exactly:
+          allocationMode: ExactCount
+          count: 8
+          deviceClassName: neuron.aws.com
+          selectors:
+          - cel:
+              expression: device.attributes['neuron.aws.com'].instanceType == 'trn2.48xlarge'
+      - name: efas
+        exactly:
+          allocationMode: ExactCount
+          count: 8
+          deviceClassName: efa.networking.k8s.aws
+      config:
+      - requests: ["neurons"]
+        opaque:
+          driver: neuron.aws.com
+          parameters:
+            apiVersion: neuron.aws.com/v1
+            kind: NeuronConfig
+            logicalNeuronCore: 2
