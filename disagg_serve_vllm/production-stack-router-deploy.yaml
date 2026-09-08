@@ -1,0 +1,147 @@
+# vLLM Production Stack Router for Neuron Disaggregated Inference (1P1D/xPyD).
+# Uses Kubernetes pod discovery to find the prefill/decode pods by label and
+# drive disaggregated_prefill_orchestrated routing (prefill first, then hand off
+# to decode).
+#
+# Prereqs: prefill-deploy.yaml and decode-deploy.yaml applied and Ready, with
+# labels app=prefill/decode and model=prefill/decode.
+#
+# Deploy:  kubectl apply -f production-stack-router-deploy.yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: router-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pod-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: router-pod-reader
+subjects:
+  - kind: ServiceAccount
+    name: router-sa
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: router
+  namespace: default
+spec:
+  selector:
+    app: router
+  ports:
+    - name: router
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: router
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: router
+  template:
+    metadata:
+      labels:
+        app: router
+    spec:
+      serviceAccountName: router-sa
+      nodeSelector:
+        node-type: m5                      # general (non-Neuron) node group
+      containers:
+        - name: app
+          # Same DLC as prefill/decode: has python3.13 + pip; we install the
+          # production-stack router into a venv on top of it.
+          image: public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.21.0.1.0.0-neuronx-py313-sdk2.31.0-ubuntu24.04
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 30
+            timeoutSeconds: 50
+            failureThreshold: 570
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 60
+            successThreshold: 1
+            failureThreshold: 3
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 60
+            successThreshold: 1
+            failureThreshold: 3
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: VLLM_LOGGING_LEVEL
+              value: "DEBUG"
+          command:
+            - /bin/bash
+            - "-exc"
+            - |
+              set -x
+
+              python3 -m venv --system-site-packages /opt/venv
+              source /opt/venv/bin/activate
+              pip install --upgrade pip setuptools wheel
+
+              # production-stack router (vllm_router.app) from upstream.
+              git clone https://github.com/vllm-project/production-stack.git /tmp/production-stack
+              export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VLLM_ROUTER=0.1.0
+              cd /tmp/production-stack
+              pip install -e .
+              pip install aiohttp uhashring kubernetes
+
+              # K8s pod discovery + disaggregated (prefill→decode) routing.
+              /opt/venv/bin/python -m vllm_router.app \
+                --host=0.0.0.0 \
+                --port=8000 \
+                --routing-logic=disaggregated_prefill_orchestrated \
+                --service-discovery=k8s \
+                --k8s-namespace=default \
+                --k8s-port=8000 \
+                --k8s-label-selector="app in (prefill,decode)" \
+                --prefill-model-labels=prefill \
+                --decode-model-labels=decode \
+                --log-level=debug \
+                --log-stats \
+                --log-stats-interval=30
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi

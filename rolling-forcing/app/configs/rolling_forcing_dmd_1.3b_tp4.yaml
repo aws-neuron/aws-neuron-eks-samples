@@ -1,0 +1,43 @@
+# Wan2.1-T2V-1.3B with Tensor Parallelism (TP=4) on Trainium
+# Single chip: 4 NeuronCores, all assigned to DiT (performance bottleneck)
+# T5 and VAE colocated on separate ranks for memory balancing
+# Each rank: 3 heads (12/4), ~325M params per shard
+#
+# 1.3B model architecture (from config.json):
+#   dim: 1536, num_heads: 12, num_layers: 30, ffn_dim: 8960
+#   head_dim: 128, text_dim: 4096, freq_dim: 256
+
+model_name: Wan2.1-T2V-1.3B
+tp_degree: 4
+
+generator_ckpt: checkpoints/ode_init.pt
+real_name: Wan2.1-T2V-1.3B
+
+denoising_step_list:
+- 1000
+- 800
+- 600
+- 400
+- 200
+warp_denoising_step: true
+ts_schedule: false
+num_train_timestep: 1000
+timestep_shift: 5.0
+guidance_scale: 3.0
+denoising_loss_type: flow
+mixed_precision: true
+seed: 0
+batch_size: 1
+
+negative_prompt: '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走'
+
+image_or_video_shape:
+- 1
+- 21
+- 16
+- 60
+- 104
+
+num_frame_per_block: 3
+model_kwargs:
+  timestep_shift: 5.0

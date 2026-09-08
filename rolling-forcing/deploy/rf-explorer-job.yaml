@@ -1,0 +1,175 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rf-explorer
+  namespace: default
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: explorer
+          image: 421672808698.dkr.ecr.us-east-1.amazonaws.com/concourse-release-0461d3b:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - "-c"
+            - |
+              set -euxo pipefail
+
+              # ═══════════════════════════════════════════════════════════════
+              # Neuron Explorer — Analyze profile traces from benchmark runs
+              #
+              # Set PROFILE_RUN to the run timestamp to analyze.
+              # Copies traces from S3 (/var/mdl) to local disk first for speed.
+              # ═══════════════════════════════════════════════════════════════
+
+              RUNS_BASE="/var/mdl/rolling_forcing/runs"
+              LOCAL_WORK="/tmp/neuron_explorer_work"
+              mkdir -p "$LOCAL_WORK"
+
+              echo "============================================"
+              echo "  NEURON EXPLORER"
+              echo "============================================"
+
+              # ─── Find run directory ─────────────────────────────────────
+              echo "=== Available runs on S3 ==="
+              ls -t "$RUNS_BASE/" 2>/dev/null | head -10
+
+              if [[ -n "${PROFILE_RUN:-}" ]]; then
+                echo "Using specified run: PROFILE_RUN=$PROFILE_RUN"
+                TARGET_RUN="$PROFILE_RUN"
+              else
+                TARGET_RUN=$(ls -t "$RUNS_BASE/" 2>/dev/null | head -1)
+                echo "No PROFILE_RUN specified — using latest: $TARGET_RUN"
+              fi
+
+              if [[ -z "$TARGET_RUN" ]]; then
+                echo "ERROR: No runs found in $RUNS_BASE"
+                exit 1
+              fi
+
+              S3_RUN_DIR="$RUNS_BASE/$TARGET_RUN"
+              LOCAL_RUN_DIR="$LOCAL_WORK/$TARGET_RUN"
+              mkdir -p "$LOCAL_RUN_DIR"
+
+              echo "S3 source: $S3_RUN_DIR"
+              echo "Local work dir: $LOCAL_RUN_DIR"
+
+              # ─── Copy profile traces from S3 to local disk ──────────────
+              S3_PROFILES="$S3_RUN_DIR/profiles"
+              if [[ ! -d "$S3_PROFILES" || -z "$(ls -A $S3_PROFILES 2>/dev/null)" ]]; then
+                echo "ERROR: No profiles found in $S3_PROFILES"
+                echo "Run rolling-forcing-job.yaml first!"
+                exit 1
+              fi
+
+              echo "Copying profile traces from S3 to local disk..."
+              cp -r "$S3_PROFILES" "$LOCAL_RUN_DIR/profiles"
+              echo "Copy complete: $(du -sh $LOCAL_RUN_DIR/profiles | cut -f1)"
+
+              # Find the NTFF directory
+              NTFF_DIR=$(find "$LOCAL_RUN_DIR/profiles" -name "*.ntff" -printf '%h\n' 2>/dev/null | head -1)
+              if [[ -z "$NTFF_DIR" ]]; then
+                NTFF_DIR=$(find "$LOCAL_RUN_DIR/profiles" -mindepth 2 -maxdepth 2 -type d 2>/dev/null | head -1)
+              fi
+              if [[ -z "$NTFF_DIR" ]]; then
+                echo "ERROR: Cannot find NTFF directory in profiles"
+                find "$LOCAL_RUN_DIR/profiles" -type f | head -20
+                exit 1
+              fi
+
+              echo "NTFF directory: $NTFF_DIR"
+              echo ""
+
+              # ─── Neuron Explorer: view ──────────────────────────────────
+              OUTPUT_DIR="$LOCAL_RUN_DIR/output"
+              mkdir -p "$OUTPUT_DIR"
+
+              echo "=== neuron-explorer view (summary-text) ==="
+              neuron-explorer view -d "$NTFF_DIR" \
+                --output-format summary-text \
+                --ignore-dma-trace 2>&1 | tee "$OUTPUT_DIR/summary.txt" || true
+
+              echo ""
+              echo "=== neuron-explorer view (JSON, skip DMA) ==="
+              neuron-explorer view -d "$NTFF_DIR" \
+                --output-format json \
+                --output-file "$OUTPUT_DIR/profile.json" \
+                --ignore-dma-trace 2>&1 | tee "$OUTPUT_DIR/view.log" || true
+
+              # ─── NEFF analysis ──────────────────────────────────────────
+              echo ""
+              echo "============================================"
+              echo "  NEFF COUNT AND SIZE DISTRIBUTION"
+              echo "============================================"
+
+              NEFF_COUNT=$(find "$NTFF_DIR" -name '*.neff' | wc -l)
+              echo "Total NEFFs: $NEFF_COUNT"
+              find "$NTFF_DIR" -name '*.neff' -exec ls -l '{}' ';' | awk '{print $5}' | sort -n | awk '
+                BEGIN { count=0; sum=0 }
+                { sizes[count++]=$1; sum+=$1 }
+                END {
+                  if (count == 0) { print "No NEFFs found"; exit }
+                  printf "Total size: %.2f MB\n", sum/1024/1024
+                  printf "Min: %d bytes\n", sizes[0]
+                  printf "Max: %d bytes (%.2f MB)\n", sizes[count-1], sizes[count-1]/1024/1024
+                  printf "Median: %d bytes\n", sizes[int(count/2)]
+                  printf "Mean: %.0f bytes\n", sum/count
+                  printf "\nSize buckets:\n"
+                  small=0; med=0; large=0; xlarge=0
+                  for(i=0;i<count;i++) {
+                    if(sizes[i]<10000) small++
+                    else if(sizes[i]<100000) med++
+                    else if(sizes[i]<1000000) large++
+                    else xlarge++
+                  }
+                  printf "  <10KB  (tiny):   %d\n", small
+                  printf "  10-100KB (small): %d\n", med
+                  printf "  100KB-1MB (med):  %d\n", large
+                  printf "  >1MB  (large):    %d\n", xlarge
+                }'
+
+              echo ""
+              echo "=== Top 15 LARGEST NEFFs ==="
+              find "$NTFF_DIR" -name '*.neff' -exec ls -lhS '{}' ';' | sort -k5 -h -r | head -15
+
+              echo ""
+              echo "=== Top 15 SMALLEST NEFFs ==="
+              find "$NTFF_DIR" -name '*.neff' -exec ls -lhS '{}' ';' | sort -k5 -h | head -15
+
+              # ─── Archive results back to S3 ─────────────────────────────
+              echo ""
+              echo "============================================"
+              echo "  Saving results to S3"
+              echo "============================================"
+              S3_OUTPUT="$S3_RUN_DIR/neuron_explorer_output"
+              mkdir -p "$S3_OUTPUT"
+              cp "$OUTPUT_DIR/summary.txt" "$S3_OUTPUT/" 2>/dev/null || true
+              cp "$OUTPUT_DIR/profile.json" "$S3_OUTPUT/" 2>/dev/null || true
+              cp "$OUTPUT_DIR/view.log" "$S3_OUTPUT/" 2>/dev/null || true
+              echo "Results saved to $S3_OUTPUT"
+              ls -la "$S3_OUTPUT/"
+
+              echo ""
+              echo "============================================"
+              echo "  DONE"
+              echo "============================================"
+          resources:
+            requests:
+              cpu: 22
+              memory: 220Gi
+            limits:
+              cpu: 22
+              memory: 220Gi
+          volumeMounts:
+            - name: 621547421844-ap-southeast-4-pvc
+              mountPath: /var/mdl
+          env:
+            - name: PROFILE_RUN
+              value: "nki_20260525_050016"
+      volumes:
+        - name: 621547421844-ap-southeast-4-pvc
+          persistentVolumeClaim:
+            claimName: 621547421844-ap-southeast-4-pvc

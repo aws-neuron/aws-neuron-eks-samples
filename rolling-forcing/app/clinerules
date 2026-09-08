@@ -1,0 +1,240 @@
+# NKI Kernel Development & Debugging Skills
+
+## Project Context
+
+This is a **rolling forcing video streaming pipeline** running on AWS Trainium/Inferentia (Neuron). The pipeline uses custom NKI (Neuron Kernel Interface) kernels for performance-critical operations:
+
+- `kernels/rope.py` — RoPE (Rotary Position Embedding) rotation
+- `kernels/cross_attention.py` — Cross-attention with softmax
+- `kernels/self_attention.py` — Flash self-attention (not yet wired)
+
+Kernels are written using the **bundled `neuronxcc.nki` API** (not the standalone `nki` pip package). They are wrapped with `torch_neuronx.nki_hop.wrap_nki()` for PyTorch integration.
+
+The deployment mechanism: the pod does `git clone` at startup from GitHub, so code changes must be **pushed to GitHub** and the **pod restarted** to take effect.
+
+---
+
+## CRITICAL RULE: `affine_range` vs `sequential_range`
+
+**This is the single most important NKI debugging lesson in this project.**
+
+### The Rule
+
+```
+nl.affine_range  → Use ONLY for inner loops with NO HBM loads/stores
+nl.sequential_range → Use for ANY loop that does nl.load() or nl.store()
+```
+
+### Why
+
+`nl.affine_range` enables **software pipelining** — the Neuron compiler overlaps load/compute/store across loop iterations. When the loop trip count exceeds **~8 iterations**, the pipeline depth exceeds hardware SBUF capacity, and buffers from iteration N get overwritten by iteration N+k **before their stores complete**.
+
+This produces **silent data corruption** — no errors, no crashes, just wrong numerical output.
+
+### The Failure Pattern
+
+- Kernel produces **correct output** (diff=0) when `num_tiles ≤ 8` (i.e., `seq_len ≤ 1024`)
+- Kernel produces **wrong output** (diff ~20-22) when `num_tiles > 8` (i.e., `seq_len > 1024`)
+- Small test inputs PASS. Production-size inputs FAIL.
+- The corruption is **deterministic** — same inputs always produce same wrong output.
+
+### The Fix
+
+One-word change in the outer loop:
+
+```python
+# WRONG — corrupts SBUF at >8 tiles
+for tile_i in nl.affine_range(num_tiles):
+    x_sb = nl.load(...)   # HBM → SBUF
+    # ... compute ...
+    nl.store(...)          # SBUF → HBM
+
+# CORRECT — no pipelining, no corruption
+for tile_i in nl.sequential_range(num_tiles):
+    x_sb = nl.load(...)
+    # ... compute ...
+    nl.store(...)
+```
+
+Inner loops that operate entirely within SBUF (no HBM IO) can safely use `affine_range`:
+
+```python
+for tile_i in nl.sequential_range(num_tiles):  # outer: sequential
+    x_sb = nl.load(...)
+    for n in nl.affine_range(N):  # inner: affine OK (no HBM IO)
+        # ... SBUF-only compute ...
+    nl.store(...)
+```
+
+---
+
+## NKI Kernel Debugging Methodology
+
+### Step 1: Isolated Kernel Validation (Small Input)
+
+Compare NKI kernel output against PyTorch CPU reference with a small, tile-aligned input:
+
+```python
+# Small shape that fits in ≤8 tiles
+x = torch.randn(896, 12, 128, dtype=torch.bfloat16)  # 7 tiles
+out_nki = kernel(x, ...)
+out_ref = pytorch_reference(x, ...)
+diff = (out_nki.float() - out_ref.float()).abs()
+assert diff.max() < 0.01, f"FAIL: {diff.max()}"
+```
+
+### Step 2: Production-Shape Validation
+
+**Always test at exact production shapes.** Small-input tests are necessary but NOT sufficient.
+
+```python
+# Production shapes (from config + padding to tile boundary)
+for shape in [(4352, 12, 128), (2688, 12, 128), (896, 12, 128)]:
+    x = torch.randn(*shape, dtype=torch.bfloat16)
+    # ... test ...
+```
+
+### Step 3: Tile-Count Sweep (if Step 1 passes but Step 2 fails)
+
+If small inputs pass but large inputs fail, sweep tile count to find the threshold:
+
+```python
+P = 128  # tile size
+for num_tiles in range(1, 40):
+    seq_len = num_tiles * P
+    x = torch.randn(seq_len, 12, 128, dtype=torch.bfloat16)
+    out_nki = kernel(x, ...)
+    out_ref = reference(x, ...)
+    diff = (out_nki.float() - out_ref.float()).abs().max().item()
+    status = "✅" if diff < 0.01 else "❌"
+    print(f"tiles={num_tiles:3d} seq_len={seq_len:5d} max_diff={diff:.6f} {status}")
+```
+
+**If threshold is at 8→9 tiles**: `affine_range` corruption. Fix: `sequential_range`.
+
+### Step 4: End-to-End Integration Test
+
+Test the full call path (not just the kernel), using the wrapper function from `layers.py`:
+
+```python
+from models.layers import CausalWanSelfAttention, causal_rope_apply
+
+attn = CausalWanSelfAttention(dim=1536, num_heads=12).to("neuron")
+out_nki = attn._nki_rope_apply(x, grid_sizes, freqs_cos, freqs_sin, start_frame)
+out_ref = causal_rope_apply(x.cpu(), grid_sizes, freqs_cos.cpu(), freqs_sin.cpu(), start_frame.cpu())
+```
+
+### Step 5: Deployment Verification
+
+**ALWAYS verify the pod has the correct code before testing:**
+
+```bash
+grep "sequential_range\|affine_range" /workspace/video-streaming-develop/kernels/rope.py
+```
+
+The pod clones from GitHub at startup. If you committed locally but didn't push, the pod won't have the fix.
+
+---
+
+## NKI API Quick Reference (bundled neuronxcc.nki)
+
+### Imports
+```python
+import neuronxcc.nki as nki
+import neuronxcc.nki.language as nl
+import neuronxcc.nki.isa as nisa
+```
+
+### Key Patterns
+```python
+@nki.jit
+def my_kernel(x, y):
+    P = nl.tile_size.pmax  # 128
+    out = nl.ndarray(shape, dtype=x.dtype, buffer=nl.shared_hbm)  # output in HBM
+    
+    for tile_i in nl.sequential_range(num_tiles):  # ALWAYS sequential for HBM IO
+        x_sb = nl.load(x[nl.ds(tile_i * P, P), :])  # HBM → SBUF
+        # ... compute in SBUF ...
+        nl.store(out[nl.ds(tile_i * P, P), :], result)  # SBUF → HBM
+    
+    return out
+```
+
+### PyTorch Integration
+```python
+from torch_neuronx.nki_hop import wrap_nki
+from kernels.my_kernel import my_kernel
+my_kernel_wrapped = wrap_nki(my_kernel)
+# Now callable from PyTorch eager mode on Neuron
+```
+
+### Common Gotchas
+1. **Input parameters are immutable** — cannot `dma_copy` into input tensors. Allocate output with `nl.shared_hbm` and return it.
+2. **Seq_len must be padded** to multiple of 128 (tile size) at the call site.
+3. **No einops-style transforms** — use manual slicing (`[:, 0::2]`, `nl.ds()`) instead of `.rearrange()`.
+4. **Return-style ops** — `result = nisa.tensor_tensor(a, b, nl.multiply)` not `nisa.tensor_tensor_arith(dst=, lhs=, rhs=)`.
+
+---
+
+## Deployment Architecture
+
+- **Pod startup**: `git clone` from GitHub → `pip install` deps → start FastAPI server
+- **Code path**: `rf-deploy.yaml` → container command → clones `video-streaming-develop` repo
+- **Kernel loading**: `layers.py` imports from `kernels/` and wraps with `wrap_nki()`
+- **NEFF cache**: Compiled kernels cached in `/tmp/neff_cache/`. Clear with `rm -rf /tmp/neff_cache/` if kernel source changed.
+- **Environment**: `USE_NKI_KERNELS=true` enables NKI kernels, `false` falls back to PyTorch SDPA.
+
+### To deploy a kernel fix:
+1. Edit kernel locally
+2. Commit and **push to GitHub**
+3. Restart the pod (it will clone fresh)
+4. Verify with `grep` on pod that new code is present
+5. Clear NEFF cache if the kernel was previously compiled
+
+---
+
+## Historical Bugs & Resolutions
+
+### RoPE `affine_range` Corruption (2026-04-23)
+- **Symptom**: Video quality regression when NKI rope kernel enabled
+- **Root cause**: `nl.affine_range` in outer HBM-load/store loop corrupts SBUF at >8 tile iterations
+- **Fix**: `affine_range` → `sequential_range` in outer loop (commit `894bf3e`)
+- **Diagnosis time**: ~2 days (multiple wrong hypotheses before tile-count sweep revealed pattern)
+- **Key insight**: The bug was invisible in small-input tests (≤8 tiles). Only manifested at production shapes (21-34 tiles).
+
+### Self-Attention Kernel Migration (2026-04-23)
+- **Task**: Port `wan_flash_self_attn` from `kernel_builder` API to bundled `neuronxcc.nki`
+- **Key obstacles**: (1) LoopVar branching — `if section_i == 0` illegal with `nl.sequential_range`, (2) Python list indexing with LoopVar, (3) Variable scope escape from if/else blocks
+- **Solution**: Branchless online softmax with `-inf` initialization + tensor mask from caller
+- **Result**: 370 lines → 160 lines; 8/9 production shapes pass (last was OOM, not a bug)
+- **Accuracy**: max_diff < 0.001 (bf16, tolerance < 2.0)
+
+---
+
+## Skill: NKI Kernel Migration (kernel_builder → bundled neuronxcc.nki)
+
+**When to use:** When migrating a kernel from the `nki.compiler.kernel_builder` API (nkipy) to bundled `neuronxcc.nki`.
+
+**Reference docs:**
+- `docs/kernel-builder-to-nki-conversion.md` — API translation tables, tracer constraints, conversion patterns
+- `docs/nki-kernel-migration-agent-workflow.md` — Full 7-stage agent workflow
+
+### 7-Stage Pipeline (Summary)
+
+1. **Extract & Catalog** — Read source kernel, list every `nb.*`/`nisa.*` call, extract signature and production shapes
+2. **Pattern Detection** — Check for: LoopVar branching, LoopVar list indexing, scope escape, fori_loop, ndarray_like, view transforms, fused ops, accum matmul, writing to inputs
+3. **Transpile** — Mechanical API translation + structural transformations (branchless softmax, tensor masks, etc.)
+4. **Generate Diagnostic** — Standalone `*_diag.py` script comparing NKI kernel vs PyTorch SDPA at all production shapes
+5. **Iterate Until Accuracy** — Run on Neuron, fix failures, repeat. NEVER go to Stage 6 until ALL shapes pass.
+6. **Wire Into Model** — Import + `wrap_nki()`, set `_nki_available = True`, build mask/pad in forward(), keep SDPA fallback
+7. **Integration Test** — End-to-end pipeline validation
+
+### Critical Rules for Transpilation
+
+- **ALWAYS `nl.sequential_range` for HBM IO loops** — `affine_range` corrupts silently at >8 tiles
+- **NEVER branch on LoopVar** — use branchless algorithms with identity-element initialization (-inf for max, 0 for sum)
+- **NEVER index Python lists with LoopVar** — pass data as tensor, use tensor indexing
+- **Variables cannot escape if/else scope** — compute everything unconditionally
+- **Input params are immutable** — allocate output with `nl.shared_hbm`, return it
+- **No fused ops** — split `tensor_scalar_cache_reduce` into separate scale + reduce
+- **Return-style, not dst-style** — `result = nisa.tensor_tensor(a, b, nl.multiply)` not `nisa.tensor_tensor_arith(dst=, ...)`

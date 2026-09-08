@@ -1,0 +1,40 @@
+# trn2.48xlarge nodegroup with Capacity Reservation + EFA
+# Cluster: rolling-forcing-sample
+#
+# This sample demonstrates how to create a Trainium2 nodegroup
+# using an On-Demand Capacity Reservation (ODCR) with EFA networking.
+#
+# Prerequisites:
+#   - An EKS cluster created with eks-cluster.yaml
+#   - A Capacity Reservation for trn2.48xlarge in your target AZ
+#   - A subnet in the same AZ as the Capacity Reservation
+#
+# Create: eksctl create nodegroup -f trn2-48xl-capacity-reservation-nodegroup.yaml
+#
+# NOTE: Replace the subnet ID and Capacity Reservation ID with your own values.
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: rolling-forcing-sample
+  region: us-east-1        # Change to your preferred region with Trainium2 availability
+
+nodeGroups:
+  - name: trn2-48xl-cr-efa
+    instanceType: trn2.48xlarge
+    minSize: 0
+    maxSize: 8
+    desiredCapacity: 1
+    privateNetworking: true
+    efaEnabled: true
+    volumeSize: 512
+    volumeType: gp3
+    labels:
+      node-type: trn2
+      efa-enabled: "true"
+    subnets:
+      - subnet-0123456789abcdef0   # Replace with your subnet ID in the same AZ as the CR
+    capacityReservation:
+      capacityReservationTarget:
+        capacityReservationID: cr-0123456789abcdef0   # Replace with your Capacity Reservation ID
